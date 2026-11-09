@@ -2,3 +2,8 @@
 __pycache__/
 *.pyc
 .test-state/
+.tools/
+/bin/
+/coverage.out
+*.exe
+/local-config/
