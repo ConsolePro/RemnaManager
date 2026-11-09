@@ -11,9 +11,9 @@ platform_check() {
 }
 bootstrap() {
     platform_check
-    if ! command -v jq >/dev/null || ! command -v curl >/dev/null || ! command -v openssl >/dev/null || ! command -v ssh-keygen >/dev/null; then
+    if ! command -v jq >/dev/null || ! command -v curl >/dev/null || ! command -v openssl >/dev/null || ! command -v ssh-keygen >/dev/null || ! command -v ip >/dev/null; then
         apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl jq openssl openssh-client
+        DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl jq openssl openssh-client iproute2
     fi
 }
 nginx_reload() { nginx -t && systemctl reload nginx; }

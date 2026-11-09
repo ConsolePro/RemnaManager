@@ -19,6 +19,8 @@ source lib/panel.sh
 source lib/nodes.sh
 source lib/monitor.sh
 source lib/menu.sh
+source lib/versions.sh
+source lib/ui.sh
 fail() { printf 'ASSERTION FAILED: %s\n' "$*" >&2; exit 1; }
 equal() { [[ $1 == "$2" ]] || fail "expected [$2], got [$1]"; }
 contains() { [[ $1 == *"$2"* ]] || fail "missing [$2]"; }
@@ -210,6 +212,56 @@ test_fail_fast() {
     if bash -c 'set -Eeuo pipefail; shopt -s inherit_errexit; f() { false; echo BAD; }; value=$(f); echo "$value"' >"$ROOT/fast-log" 2>&1; then fail 'errexit disabled'; fi
     [[ ! -s $ROOT/fast-log ]] || fail 'failed operation continued'
 }
+test_dashboard() {
+    nproc() { printf '4\n'; }
+    cpu_usage() { printf '37%%'; }
+    df() { printf 'Size Avail Use%% Mounted\n107374182400 64424509440 40%% /\n'; }
+    ip() {
+        case "$*" in
+            '-4 route show default') printf 'default via 192.0.2.1 dev eth0\n';;
+            '-6 route show default') printf 'default via 2001:db8::1 dev eth1\n';;
+            '-o link show dev eth0') printf '2: eth0: <UP> mtu 1500 state UP mode DEFAULT\n';;
+            '-o -4 addr show dev eth0 scope global') printf '2: eth0 inet 192.0.2.2/24 scope global eth0\n';;
+            '-o -6 addr show dev eth1 scope global') printf '3: eth1 inet6 2001:db8::2/64 scope global\n';;
+        esac
+    }
+    printf '{"ok":true,"tags":[]}' | save "$VERSION_CACHE"
+    dashboard 2>"$ROOT/dashboard"
+    contains "$(cat "$ROOT/dashboard")" '4 ядер'
+    contains "$(cat "$ROOT/dashboard")" '37%'
+    contains "$(cat "$ROOT/dashboard")" '100.0 ГиБ'
+    contains "$(cat "$ROOT/dashboard")" '60.0 ГиБ'
+    contains "$(cat "$ROOT/dashboard")" '192.0.2.2'
+    contains "$(cat "$ROOT/dashboard")" '2001:db8::2'
+    contains "$(cat "$ROOT/dashboard")" "v$(cat VERSION)"
+    [[ $(cat "$ROOT/dashboard") != *$'\033'* ]] || fail 'escape codes emitted outside terminal'
+    ui_menu 'Меню' '7. Версии' '0. Выход' <<<7 2>"$ROOT/menu"
+    equal "$CHOICE" 7
+    # Missing IPv6 and disconnected links must not fail the dashboard.
+    ip() { :; }
+    system_status
+    equal "$STATUS_IPV6" 'нет адреса'
+    equal "$STATUS_NETWORK" 'нет маршрута по умолчанию'
+}
+test_version_catalog() {
+    version_newer 1.10.0 1.9.9 || fail 'lexical version comparison'
+    if version_newer 1.0.0 1.0.0; then fail 'equal version considered newer'; fi
+    if version_valid '../outside'; then fail 'unsafe version accepted'; fi
+    curl() {
+        printf '[{"name":"v1.9.9","commit":{"sha":"1111111111111111111111111111111111111111"}},{"name":"v1.10.0","commit":{"sha":"2222222222222222222222222222222222222222"}},{"name":"untrusted","commit":{"sha":"bad"}}]'
+    }
+    versions_refresh
+    equal "$(jq -r '.tags[0].version' "$VERSION_CACHE")" 1.10.0
+    contains "$(version_notice)" 'Доступно обновление v1.10.0'
+    curl() { return 22; }
+    # The fresh cache prevents another network call and survives offline checks.
+    versions_check_cached
+    equal "$(jq -r .ok "$VERSION_CACHE")" true
+    if versions_refresh; then fail 'failed update lookup accepted'; fi
+    equal "$(jq -r .ok "$VERSION_CACHE")" false
+    contains "$(version_notice)" 'по сохранённой проверке'
+    equal "$(jq -r '.tags[0].sha' "$VERSION_CACHE")" 2222222222222222222222222222222222222222
+}
 test_distribution() {
     local archive=$ROOT/app.tar file digest
     sh -n dist/remnamanager.sh
@@ -219,7 +271,7 @@ test_distribution() {
     mkdir -p "$ROOT/extracted"
     tar -xf "$archive" -C "$ROOT/extracted"
     equal "$(find "$ROOT/extracted" -name '*.py' | wc -l | tr -d '[:space:]')" 0
-    for file in manager.sh agent.sh lib/runtime.sh lib/render.sh lib/provision.sh lib/ssh.sh lib/panel.sh lib/nodes.sh lib/monitor.sh lib/menu.sh lib/install.sh lib/shortcuts.sh README.md; do cmp "$file" "$ROOT/extracted/$file"; done
+    while IFS= read -r file; do cmp "$file" "$ROOT/extracted/$file"; done <app-files.txt
     bash -n "$ROOT/extracted/manager.sh"
 }
 test_bundle() {

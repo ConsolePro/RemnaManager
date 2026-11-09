@@ -5,7 +5,10 @@ umask 077
 cd -- "$(dirname -- "$0")"
 temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT
-files=(manager.sh agent.sh lib/runtime.sh lib/render.sh lib/provision.sh lib/ssh.sh lib/panel.sh lib/nodes.sh lib/monitor.sh lib/menu.sh lib/install.sh lib/shortcuts.sh README.md)
+mapfile -t files <app-files.txt
+for file in "${files[@]}"; do
+    [[ $file =~ ^[a-zA-Z0-9_./-]+$ && $file != /* && $file != *..* && -f $file ]] || { printf 'Invalid app manifest: %s\n' "$file" >&2; exit 1; }
+done
 for file in remnamanager.sh build.sh "${files[@]}"; do [[ $file != *.sh ]] || bash -n "$file"; done
 tar --format=ustar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner --mode=0600 -cf "$temporary/app.tar" "${files[@]}"
 digest=$(sha256sum "$temporary/app.tar"); digest=${digest%% *}
@@ -32,11 +35,21 @@ printf 'printf '\''%%s  %%s\\n'\'' '\''%s'\'' "$temporary/app.tar" | sha256sum -
 cat >>"$temporary/distribution" <<'HEADER'
 mkdir "$temporary/app"
 tar --no-same-owner -xf "$temporary/app.tar" -C "$temporary/app"
-if [ -L "$root/app" ] || [ -L "$root/app/lib" ]; then echo 'Каталог приложения не должен быть символьной ссылкой.' >&2; exit 1; fi
-mkdir -p "$root/app/lib"
-for file in manager.sh agent.sh lib/runtime.sh lib/render.sh lib/provision.sh lib/ssh.sh lib/panel.sh lib/nodes.sh lib/monitor.sh lib/menu.sh lib/install.sh lib/shortcuts.sh README.md; do
-    install -m 600 "$temporary/app/$file" "$root/app/$file"
-done
+if [ -L "$root/app" ]; then echo 'Каталог приложения не должен быть символьной ссылкой.' >&2; exit 1; fi
+backup=''
+if [ -d "$root/app" ]; then
+    backup="$root/versions/$(date +%Y%m%d-%H%M%S)-install-$$"
+    mkdir -p "$backup"
+    version='неизвестна'
+    if [ -f "$root/app/VERSION" ] && grep -Eq '^[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}$' "$root/app/VERSION"; then version=$(cat "$root/app/VERSION"); fi
+    printf '{"version":"%s","date":"%s"}\n' "$version" "$(date -u +%FT%TZ)" >"$backup/metadata.json"
+    mv "$root/app" "$backup/app"
+fi
+if ! mv "$temporary/app" "$root/app"; then
+    if [ -n "$backup" ]; then mv "$backup/app" "$root/app"; fi
+    echo 'Не удалось установить приложение; прежний каталог возвращён.' >&2
+    exit 1
+fi
 rm -rf -- "$temporary"
 trap - EXIT HUP INT TERM
 flock -u 9

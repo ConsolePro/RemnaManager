@@ -42,6 +42,7 @@ confirm() {
     [[ $answer == ДА ]]
 }
 menu() {
+    if declare -F ui_menu >/dev/null; then ui_menu "$@"; return; fi
     local title=$1 item
     shift
     printf '\n%s\n' "$title" >&2
