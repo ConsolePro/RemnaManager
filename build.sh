@@ -5,7 +5,7 @@ umask 077
 cd -- "$(dirname -- "$0")"
 temporary=$(mktemp -d)
 trap 'rm -rf -- "$temporary"' EXIT
-files=(manager.sh agent.sh lib/runtime.sh lib/render.sh lib/provision.sh lib/ssh.sh lib/panel.sh lib/nodes.sh lib/monitor.sh lib/menu.sh README.md)
+files=(manager.sh agent.sh lib/runtime.sh lib/render.sh lib/provision.sh lib/ssh.sh lib/panel.sh lib/nodes.sh lib/monitor.sh lib/menu.sh lib/install.sh lib/shortcuts.sh README.md)
 for file in remnamanager.sh build.sh "${files[@]}"; do [[ $file != *.sh ]] || bash -n "$file"; done
 tar --format=ustar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner --mode=0600 -cf "$temporary/app.tar" "${files[@]}"
 digest=$(sha256sum "$temporary/app.tar"); digest=${digest%% *}
@@ -34,7 +34,7 @@ mkdir "$temporary/app"
 tar --no-same-owner -xf "$temporary/app.tar" -C "$temporary/app"
 if [ -L "$root/app" ] || [ -L "$root/app/lib" ]; then echo 'Каталог приложения не должен быть символьной ссылкой.' >&2; exit 1; fi
 mkdir -p "$root/app/lib"
-for file in manager.sh agent.sh lib/runtime.sh lib/render.sh lib/provision.sh lib/ssh.sh lib/panel.sh lib/nodes.sh lib/monitor.sh lib/menu.sh README.md; do
+for file in manager.sh agent.sh lib/runtime.sh lib/render.sh lib/provision.sh lib/ssh.sh lib/panel.sh lib/nodes.sh lib/monitor.sh lib/menu.sh lib/install.sh lib/shortcuts.sh README.md; do
     install -m 600 "$temporary/app/$file" "$root/app/$file"
 done
 rm -rf -- "$temporary"

@@ -136,3 +136,15 @@ printf '0\n' | sh dist/remnamanager.sh
 jq -e '.nodes == {} and .panel.ready == true and .token == "manager-test"' "$STATE" >/dev/null
 [[ ! -f $ROOT/app/remnamanager.py ]]
 printf 'PASS Linux standalone install, repeat install and Telegram migration\n'
+remna_manager --check
+[[ $(grep -Fc '. /etc/profile.d/remnamanager.sh # RemnaManager shortcuts' /root/.bashrc) == 1 ]]
+bash --noprofile --norc -ic '
+    . /etc/profile.d/remnamanager.sh
+    remna_manager() { printf "shortcut launched\n" > /opt/remnamanager/shortcut-result; }
+    rm
+    test "$(cat /opt/remnamanager/shortcut-result)" = "shortcut launched" || exit 1
+    touch /opt/remnamanager/shortcut-delete-test
+    rm -f -- /opt/remnamanager/shortcut-delete-test
+    test ! -e /opt/remnamanager/shortcut-delete-test || exit 1
+'
+printf 'PASS installed remna_manager and rm shortcut with ordinary deletion preserved\n'

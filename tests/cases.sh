@@ -206,7 +206,7 @@ test_distribution() {
     mkdir -p "$ROOT/extracted"
     tar -xf "$archive" -C "$ROOT/extracted"
     equal "$(find "$ROOT/extracted" -name '*.py' | wc -l | tr -d '[:space:]')" 0
-    for file in manager.sh agent.sh lib/runtime.sh lib/render.sh lib/provision.sh lib/ssh.sh lib/panel.sh lib/nodes.sh lib/monitor.sh lib/menu.sh README.md; do cmp "$file" "$ROOT/extracted/$file"; done
+    for file in manager.sh agent.sh lib/runtime.sh lib/render.sh lib/provision.sh lib/ssh.sh lib/panel.sh lib/nodes.sh lib/monitor.sh lib/menu.sh lib/install.sh lib/shortcuts.sh README.md; do cmp "$file" "$ROOT/extracted/$file"; done
     bash -n "$ROOT/extracted/manager.sh"
 }
 test_bundle() {

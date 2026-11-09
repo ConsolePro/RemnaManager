@@ -11,6 +11,7 @@ source "$APP_DIR/lib/panel.sh"
 source "$APP_DIR/lib/nodes.sh"
 source "$APP_DIR/lib/monitor.sh"
 source "$APP_DIR/lib/menu.sh"
+source "$APP_DIR/lib/install.sh"
 if [[ ${1:-} == --check ]]; then
     for file in "$APP_DIR"/*.sh "$APP_DIR"/lib/*.sh; do bash -n "$file"; done
     need jq; need curl; need openssl; need tar; need flock
@@ -40,6 +41,8 @@ bootstrap
 if [[ ! -f $STATE ]]; then printf '{"nodes":{}}\n' | save "$STATE"; fi
 jq -e 'type == "object" and (.nodes|type == "object")' "$STATE" >/dev/null || die 'Некорректный state.json. Восстановите резервную копию.'
 if [[ ${1:-} == --notify ]]; then notify; exit; fi
+install_commands
+printf 'Повторный запуск: remna_manager. Сокращение rm без аргументов — в новой Bash-сессии root.\n'
 if [[ -f $ROOT/telegram.json && -f /etc/systemd/system/remnamanager-monitor.service ]] && grep -q 'python3' /etc/systemd/system/remnamanager-monitor.service; then monitor_units; fi
 set +e
 main_menu
