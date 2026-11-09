@@ -148,3 +148,28 @@ bash --noprofile --norc -ic '
     test ! -e /opt/remnamanager/shortcut-delete-test || exit 1
 '
 printf 'PASS installed remna_manager and rm shortcut with ordinary deletion preserved\n'
+
+# Execute the documented process-substitution form with a local download stub.
+# The menu must retain its input, arguments must reach the real distribution,
+# and temporary files must be removed after success and HTTP failure.
+cat >"$ROOT/mock-bin/curl" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+[[ ! -f /opt/remnamanager/bootstrap-fail ]] || exit 22
+output=''
+while (($#)); do
+    if [[ $1 == -o ]]; then output=$2; shift 2; else shift; fi
+done
+[[ -n $output ]]
+cp /work/dist/remnamanager.sh "$output"
+EOF
+chmod 700 "$ROOT/mock-bin/curl"
+mkdir "$ROOT/bootstrap-tmp"
+export TMPDIR=$ROOT/bootstrap-tmp
+bash <(cat install.sh) --check
+printf '0\n' | bash <(cat install.sh)
+[[ -z $(find "$TMPDIR" -mindepth 1 -print -quit) ]]
+touch "$ROOT/bootstrap-fail"
+if bash <(cat install.sh) >"$ROOT/bootstrap-failure-log" 2>&1; then die 'Bootstrap ignored a failed download.'; fi
+[[ -z $(find "$TMPDIR" -mindepth 1 -print -quit) ]]
+printf 'PASS process-substitution installer, interactive input, arguments and cleanup\n'

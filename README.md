@@ -11,12 +11,14 @@
 Быстрая установка на управляющем сервере:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/OverlayNode/RemnaManager/main/dist/remnamanager.sh -o remnamanager-install.sh && sudo sh ./remnamanager-install.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/OverlayNode/RemnaManager/refs/heads/main/install.sh)
 ```
 
-[Скачать автономный установщик](https://raw.githubusercontent.com/OverlayNode/RemnaManager/main/dist/remnamanager.sh) · [Исходный код](https://github.com/OverlayNode/RemnaManager)
+[Скрипт установки](https://raw.githubusercontent.com/OverlayNode/RemnaManager/refs/heads/main/install.sh) · [Автономный установщик](https://raw.githubusercontent.com/OverlayNode/RemnaManager/main/dist/remnamanager.sh) · [Исходный код](https://github.com/OverlayNode/RemnaManager)
 
-Установщик размещает менеджер в `/opt/remnamanager/app`, добавляет команду `remna_manager` и открывает меню. Установка самой панели и компонентов выбирается в меню. Для обновления менеджера выполните ту же команду ещё раз; настройки и SSH-ключи сохраняются.
+Команду нужно выполнять в Bash. `install.sh` скачивает автономный установщик во временный файл, запускает его и удаляет временные файлы после завершения. При запуске обычным пользователем он запросит повышение прав через sudo. Меню получает ввод из терминала.
+
+Установщик размещает менеджер в `/opt/remnamanager/app`, добавляет команду `remna_manager` и открывает меню. Установка самой панели и компонентов выбирается в меню. Для обновления менеджера выйдите из открытого меню и выполните ту же команду ещё раз; настройки и SSH-ключи сохраняются.
 
 После установки повторный запуск из любого каталога:
 

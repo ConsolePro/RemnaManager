@@ -15,6 +15,6 @@ cp /source/tests/*.sh /work/tests/
 cp /source/dist/remnamanager.sh /work/dist/
 cd /work
 bash manager.sh --check
-shellcheck -x remnamanager.sh manager.sh agent.sh build.sh lib/*.sh tests/*.sh
+shellcheck -x install.sh remnamanager.sh manager.sh agent.sh build.sh lib/*.sh tests/*.sh
 bash tests/run.sh
 bash tests/linux.sh

@@ -10,7 +10,7 @@ jobs:
       - name: Syntax and dependencies
         run: bash manager.sh --check
       - name: ShellCheck
-        run: shellcheck -x remnamanager.sh manager.sh agent.sh build.sh lib/*.sh tests/*.sh
+        run: shellcheck -x install.sh remnamanager.sh manager.sh agent.sh build.sh lib/*.sh tests/*.sh
       - name: Regression tests and distribution
         run: bash tests/run.sh
   linux-integration:
