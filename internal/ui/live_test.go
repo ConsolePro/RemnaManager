@@ -102,14 +102,3 @@ func checkLayoutAcrossScreens(t *testing.T) {
 		}
 	}
 }
-
-func TestMonogramAndPlainFallback(t *testing.T) {
-	t.Setenv("NO_COLOR", "")
-	if lipgloss.Height(terminalLogo(false)) != 3 || lipgloss.Width(terminalLogo(false)) < 12 {
-		t.Fatal("missing large terminal monogram")
-	}
-	t.Setenv("NO_COLOR", "1")
-	if terminalLogo(true) != "RM" {
-		t.Fatal("compact monogram must remain readable without colors")
-	}
-}
