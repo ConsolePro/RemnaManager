@@ -15,7 +15,7 @@ credentials() {
 }
 create_subscription_token() {
     local token=$1 response subscription_token
-    response=$(API_TOKEN=$token api POST /tokens '{"name":"RemnaManager Subpage","expiresInDays":3650,"scopes":["subscriptions:read","subscription-page-configs:read","system:read"]}')
+    response=$(API_TOKEN=$token API_ADMIN=1 api POST /tokens '{"name":"RemnaManager Subpage","expiresInDays":3650,"scopes":["subscriptions:read","subscription-page-configs:read","system:read"]}')
     subscription_token=$(jq -er '.token | select(type == "string" and length > 0)' <<<"$response")
     state_edit '.subscription_token = $token' --arg token "$subscription_token"
 }
@@ -61,17 +61,21 @@ panel_install() {
     compose "$PANEL" config --quiet
     compose "$PANEL" pull
     compose "$PANEL" up -d --wait --wait-timeout 240
-    wait_http http://127.0.0.1:3000/api/auth/status
-    if [[ -z $(state_get '.token') ]]; then
+    # Production Remnawave closes the socket without trusted HTTPS proxy headers,
+    # even though its separate metrics healthcheck already reports healthy.
+    wait_http http://127.0.0.1:3000/api/auth/status -H 'X-Forwarded-Proto: https' -H 'X-Forwarded-For: 127.0.0.1'
+    if [[ -z $(state_get '.token') || -z $(state_get '.subscription_token') ]]; then
         response=$(API_ANONYMOUS=1 api GET /auth/status)
         auth=login
         if [[ $(jq -r .isRegisterAllowed <<<"$response") == true ]]; then auth=register; fi
         response=$(API_ANONYMOUS=1 api POST "/auth/$auth" "$(jq -n --arg username "$admin" --arg password "$password" '{username:$username,password:$password}')")
         token=$(jq -er .accessToken <<<"$response")
-        response=$(API_TOKEN=$token api POST /tokens '{"name":"RemnaManager","expiresInDays":3650,"scopes":["*"]}')
-        manager_token=$(jq -er '.token | select(type == "string" and length > 0)' <<<"$response")
-        state_edit '.token = $token' --arg token "$manager_token"
-        create_subscription_token "$token"
+        if [[ -z $(state_get '.token') ]]; then
+            response=$(API_TOKEN=$token API_ADMIN=1 api POST /tokens '{"name":"RemnaManager","expiresInDays":3650,"scopes":["*"]}')
+            manager_token=$(jq -er '.token | select(type == "string" and length > 0)' <<<"$response")
+            state_edit '.token = $token' --arg token "$manager_token"
+        fi
+        if [[ -z $(state_get '.subscription_token') ]]; then create_subscription_token "$token"; fi
     fi
     site "$name" "$email" 3000 "$gate"
     state_edit '.panel.ready = true'

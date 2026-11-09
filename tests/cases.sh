@@ -117,7 +117,11 @@ test_nginx_rollback() {
 }
 mock_api_curl() {
     local output='' arg
-    while (($#)); do arg=$1; shift; if [[ $arg == -o ]]; then output=$1; shift; fi; done
+    while (($#)); do
+        arg=$1; shift
+        if [[ $arg == -o ]]; then output=$1; shift
+        elif [[ $arg == -H && $1 == @* ]]; then cp "${1#@}" "$ROOT/request-headers"; shift; fi
+    done
     if [[ ${MOCK_API_CODE:-200} == 200 ]]; then printf '{"response":{"ok":true}}' >"$output"
     else printf '{"error":"DO_NOT_ECHO_SECRET"}' >"$output"; fi
     printf '%s' "${MOCK_API_CODE:-200}"
@@ -126,6 +130,9 @@ test_api_errors() {
     printf '{"nodes":{},"token":"test-token"}' | save "$STATE"
     curl() { mock_api_curl "$@"; }
     equal "$(api GET /nodes | jq -r .ok)" true
+    [[ $(cat "$ROOT/request-headers") != *'X-Remnawave-Client-Type'* ]] || fail 'ordinary API token marked as browser'
+    API_ADMIN=1 api POST /tokens '{}' >/dev/null
+    contains "$(cat "$ROOT/request-headers")" 'X-Remnawave-Client-Type: browser'
     export -f api state_get curl mock_api_curl die
     export ROOT STATE MOCK_API_CODE=400
     if bash -c 'set -euo pipefail; api POST /tokens "{}"' >"$ROOT/api-log" 2>&1; then fail 'API error accepted'; fi
@@ -138,6 +145,12 @@ test_readiness() {
     curl() { local count=0; [[ ! -f $ROOT/count ]] || count=$(cat "$ROOT/count"); ((count+=1)); printf '%s' "$count" >"$ROOT/count"; if ((count < 2)); then printf 503; else printf 401; fi; }
     wait_http http://localhost
     equal "$(cat "$ROOT/count")" 2
+    # Production Remnawave destroys the socket unless both headers are present.
+    curl() {
+        if [[ " $* " == *' X-Forwarded-Proto: https '* && " $* " == *' X-Forwarded-For: 127.0.0.1 '* ]]; then printf 200
+        else printf 000; return 52; fi
+    }
+    wait_http http://127.0.0.1:3000/api/auth/status -H 'X-Forwarded-Proto: https' -H 'X-Forwarded-For: 127.0.0.1'
     # shellcheck disable=SC2329,SC2317
     curl() { printf 503; }
     export -f curl sleep wait_http die

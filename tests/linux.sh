@@ -57,15 +57,25 @@ download() {
 }
 api() {
     case $1:$2 in
-        GET:/auth/status) printf '{"isRegisterAllowed":true}';;
-        POST:/auth/register) printf '{"accessToken":"login-test"}';;
+        GET:/auth/status)
+            if [[ -f $ROOT/admin-created ]]; then printf '{"isRegisterAllowed":false}'
+            else printf '{"isRegisterAllowed":true}'; fi;;
+        POST:/auth/register) touch "$ROOT/admin-created"; printf '{"accessToken":"login-test"}';;
+        POST:/auth/login) printf '{"accessToken":"login-test"}';;
         POST:/tokens)
-            if [[ $(jq -r .name <<<"$3") == RemnaManager ]]; then printf '{"token":"manager-test"}'
+            [[ ${API_ADMIN:-0} == 1 ]] || die 'Admin JWT request omitted browser client header.'
+            if [[ $(jq -r .name <<<"$3") == RemnaManager ]]; then
+                printf 'created\n' >>"$ROOT/manager-tokens-created"
+                printf '{"token":"manager-test"}'
             else printf '{"token":"subscription-test"}'; fi;;
         *) die "Unexpected API call $1 $2";;
     esac
 }
-wait_http() { :; }
+wait_http() {
+    if [[ $1 == http://127.0.0.1:3000/* ]]; then
+        [[ " $* " == *' X-Forwarded-Proto: https '* && " $* " == *' X-Forwarded-For: 127.0.0.1 '* ]] || die 'Panel readiness omitted production proxy headers.'
+    fi
+}
 confirm() { return 1; }
 printf 'panel.example.org\nsub.example.org\nadmin@example.org\n192.0.2.1\nadmin\n' | panel_install >"$ROOT/panel-install-log"
 jq -e '.panel.ready == true and .panel.version == "v1.2.3" and .token == "manager-test" and .subscription_token == "subscription-test"' "$STATE" >/dev/null
@@ -74,6 +84,11 @@ password=$(state_get .panel.password)
 panel_install </dev/null
 [[ $(state_get .panel.password) == "$password" ]]
 printf 'PASS Linux panel bootstrap and idempotent credentials\n'
+state_edit '.panel.ready = false | del(.subscription_token)'
+printf '\n\n\n\n\n' | panel_install >"$ROOT/panel-resume-log"
+[[ $(state_get .panel.password) == "$password" && $(state_get .subscription_token) == subscription-test ]]
+[[ $(wc -l <"$ROOT/manager-tokens-created") == 1 ]]
+printf 'PASS Linux panel resume after manager token checkpoint\n'
 
 # Verify that a failed backend restart restores Compose and leaves its version
 # checkpoint unchanged, with a database/config backup retained.

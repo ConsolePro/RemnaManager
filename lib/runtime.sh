@@ -107,8 +107,9 @@ api() {
     headers=$(mktemp "$ROOT/api-headers.XXXXXXXX")
     response=$(mktemp "$ROOT/api-response.XXXXXXXX")
     { printf 'Content-Type: application/json\nX-Forwarded-Proto: https\nX-Forwarded-For: 127.0.0.1\n';
+      if [[ ${API_ADMIN:-0} == 1 ]]; then printf 'X-Remnawave-Client-Type: browser\n'; fi
       [[ -z $token ]] || printf 'Authorization: Bearer %s\n' "$token"; } >"$headers"
-    local -a args=(--silent --show-error --connect-timeout 10 --max-time 40 -X "$method" -H "@$headers" -o "$response" -w '%{http_code}')
+    local -a args=(--silent --show-error --noproxy '127.0.0.1,localhost,::1' --connect-timeout 10 --max-time 40 -X "$method" -H "@$headers" -o "$response" -w '%{http_code}')
     if [[ -n $body ]]; then args+=(--data-binary @-); fi
     if ! code=$(printf '%s' "$body" | curl "${args[@]}" "http://127.0.0.1:3000/api$path"); then
         rm -f -- "$headers" "$response"; die "API $method $path: ошибка соединения."
@@ -123,11 +124,12 @@ api() {
 }
 wait_http() {
     local url=$1 attempt code
+    shift
     for ((attempt=0; attempt<${RM_HTTP_ATTEMPTS:-30}; attempt++)); do
-        code=$(curl --silent --max-time 3 -o /dev/null -w '%{http_code}' "$url") || code=000
+        code=$(curl --silent --noproxy 127.0.0.1,localhost,::1 --max-time 3 -o /dev/null -w '%{http_code}' "$@" "$url") || code=000
         case $code in 2??|3??|400|401|403|404) return;; esac
         sleep 2
     done
-    die 'Приложение не отвечает на локальном HTTP-порту. Проверьте логи.'
+    die "Приложение не отвечает: $url (последний HTTP-код: $code). Проверьте логи контейнера."
 }
 nodes() { api GET /nodes | jq 'if type == "array" then . else .nodes end'; }
