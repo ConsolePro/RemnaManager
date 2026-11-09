@@ -20,17 +20,17 @@ func TestRenderPreviewArtifacts(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	defer lipgloss.SetColorProfile(previous)
 	m := testModel(t, true)
-	m.width = 96
+	m.width = 124
 	m.height = 36
 	m.frames[0].cursor = 3
 	m.lastStats = time.Now()
-	m.stats = stats.Snapshot{CPUs: 4, CPU: 17, Memory: 4 << 30, Available: 2 << 30, Swap: 2 << 30, Disk: 40 << 30, Free: 32 << 30, DiskPercent: 20, IPv4: "192.0.2.10", IPv6: "Not connected"}
+	m.stats = stats.Snapshot{CPUs: 4, CPU: 5, Memory: 4080218931, Available: 2576980377, Swap: 2 << 30, Disk: 115 << 30, Free: 96 << 30, DiskPercent: 17, IPv4: "192.0.2.10", IPv6: "Not connected"}
 	if err := os.WriteFile(filepath.Join(dir, "menu.ansi"), []byte(m.View()), 0600); err != nil {
 		t.Fatal(err)
 	}
 	m.screen = "progress"
 	m.stage = 4
-	m.height = 32
+	m.height = 36
 	for _, step := range m.service.Stages()[:4] {
 		m.logs = append(m.logs, "Демо: "+step[0])
 	}

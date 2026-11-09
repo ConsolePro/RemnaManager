@@ -10,6 +10,7 @@ import (
 	"github.com/ConsolePro/RemnaManager/internal/system/stats"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func TestStatsPollingAcrossScreens(t *testing.T) {
@@ -71,6 +72,15 @@ func TestLoadingAndDelayedMetrics(t *testing.T) {
 }
 
 func TestLayoutAcrossScreens(t *testing.T) {
+	previous := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(previous)
+	for _, profile := range []termenv.Profile{termenv.Ascii, termenv.ANSI, termenv.ANSI256} {
+		lipgloss.SetColorProfile(profile)
+		t.Run(fmt.Sprintf("profile-%d", profile), checkLayoutAcrossScreens)
+	}
+}
+
+func checkLayoutAcrossScreens(t *testing.T) {
 	for _, size := range [][2]int{{36, 18}, {60, 24}, {80, 24}, {80, 30}, {110, 36}, {160, 50}} {
 		for _, screen := range []string{"menu", "language", "email", "domains", "confirm", "progress", "notice"} {
 			m := testModel(t, true)
@@ -93,19 +103,13 @@ func TestLayoutAcrossScreens(t *testing.T) {
 	}
 }
 
-func TestRasterLogoAndPlainFallback(t *testing.T) {
+func TestMonogramAndPlainFallback(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
-	if len(logoPNG) < 8 || string(logoPNG[1:4]) != "PNG" {
-		t.Fatal("missing embedded PNG")
-	}
-	for _, compact := range []bool{false, true} {
-		logo := terminalLogo(compact)
-		if !strings.Contains(logo, "▀") {
-			t.Fatal("logo is not raster-rendered")
-		}
+	if lipgloss.Height(terminalLogo(false)) != 3 || lipgloss.Width(terminalLogo(false)) < 12 {
+		t.Fatal("missing large terminal monogram")
 	}
 	t.Setenv("NO_COLOR", "1")
-	if !strings.Contains(terminalLogo(false), "R›") {
-		t.Fatal("missing plain-terminal logo")
+	if terminalLogo(true) != "RM" {
+		t.Fatal("compact monogram must remain readable without colors")
 	}
 }
