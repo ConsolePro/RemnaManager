@@ -129,6 +129,4 @@ python3 build.py
 - [Официальный образ ноды и путь Xray](https://github.com/remnawave/node/blob/main/docker/Dockerfile)
 - [Xray Checker](https://github.com/kutovoys/xray-checker)
 - [Cloudflare WARP для Linux](https://developers.cloudflare.com/warp-client/get-started/linux/)
-- [Исходный проект, указанный в задаче](https://github.com/eGamesAPI/remnawave-reverse-proxy)
 
-Код eGamesAPI в проект не копировался. Установщик использует официальные образы и API соответствующих проектов; лицензии этих компонентов сохраняют действие.
