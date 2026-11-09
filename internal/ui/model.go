@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type statsMsg stats.Snapshot
@@ -56,6 +57,8 @@ type Model struct {
 	viewport                                           viewport.Model
 	progress                                           progress.Model
 	stats                                              stats.Snapshot
+	statsProvider                                      func(context.Context) stats.Snapshot
+	lastStats                                          time.Time
 	latest, updateStatus, notice, problem, environment string
 	checking, saving, exitConfirm, exitYes, editing    bool
 	stage, run                                         int
@@ -65,7 +68,8 @@ type Model struct {
 
 func New(ctx context.Context, store config.Store, cfg config.Config, checker updater.Checker, service services.PanelInstaller) Model {
 	m := Model{ctx: ctx, store: store, cfg: cfg, checker: checker, service: service, screen: "menu", width: 80, height: 30,
-		frames: []frame{{items: menu()}}, viewport: viewport.New(74, 12), progress: progress.New(progress.WithDefaultGradient())}
+		frames: []frame{{items: menu()}}, viewport: viewport.New(74, 12), progress: progress.New(progress.WithSolidFill(emerald), progress.WithoutPercentage(), progress.WithFillCharacters('━', '━'), progress.WithColorProfile(lipgloss.ColorProfile())), statsProvider: stats.Collect}
+	m.progress.EmptyColor = edge
 	if !cfg.Initialized {
 		m.startSettings(false)
 	}
@@ -77,12 +81,20 @@ func (m Model) l(ru, en string) string {
 	}
 	return ru
 }
-func (m Model) Init() tea.Cmd { return tea.Batch(m.collect(), m.check(), textinput.Blink) }
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(m.collect(), m.check(), textinput.Blink, headerClock())
+}
+
+type clockMsg struct{}
+
+func headerClock() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return clockMsg{} })
+}
 func (m Model) collect() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, 1500*time.Millisecond)
 		defer cancel()
-		return statsMsg(stats.Collect(ctx))
+		return statsMsg(m.statsProvider(ctx))
 	}
 }
 func (m Model) check() tea.Cmd {
@@ -141,6 +153,9 @@ func (m *Model) back() {
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case clockMsg:
+		// Repaint delayed-data status even while a collector is slow or blocked.
+		return m, headerClock()
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.viewport.Width = max(1, msg.Width-6)
@@ -151,11 +166,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case statsMsg:
 		m.stats = stats.Snapshot(msg)
-		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return pollStats{} })
+		m.lastStats = time.Now()
+		return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return pollStats{} })
 	case pollStats:
 		return m, m.collect()
 	case updateMsg:
-		m.checking = false
 		if msg.err != nil {
 			m.updateStatus = m.l("GitHub недоступен; можно продолжать работу.", "GitHub unavailable; you can continue working.")
 		} else {
@@ -368,11 +383,18 @@ func (m Model) title() string {
 
 func gb(n uint64) float64 { return float64(n) / (1 << 30) }
 func (m Model) statsView() string {
-	s := m.stats
-	text := fmt.Sprintf(m.l("ЦП: %d %s · %.0f%%\nОЗУ: %.1f GB всего · %.1f GB доступно · SWAP %.1f GB\nДиск /: %.1f GB всего · %.1f GB свободно · %.0f%% занято", "CPU: %d %s · %.0f%%\nRAM: %.1f GB total · %.1f GB available · SWAP %.1f GB\nDisk /: %.1f GB total · %.1f GB free · %.0f%% used"), s.CPUs, m.l(stats.Cores(s.CPUs), "cores"), s.CPU, gb(s.Memory), gb(s.Available), gb(s.Swap), gb(s.Disk), gb(s.Free), s.DiskPercent)
-	text += fmt.Sprintf("\nIPv4: %s · IPv6: %s", s.IPv4, s.IPv6)
-	if s.Err != nil {
-		text += "\n" + m.l("Часть статистики недоступна.", "Some statistics are unavailable.")
+	if m.lastStats.IsZero() {
+		return muted.Render(m.l("Получаем текущие данные сервера…", "Reading current server metrics…"))
 	}
-	return text
+	s := m.stats
+	cores := m.l(stats.Cores(s.CPUs), "cores")
+	cpu := accent.Render(fmt.Sprintf("%.0f%%", s.CPU))
+	first := fmt.Sprintf("%s %d %s · %s", m.l("ЦП", "CPU"), s.CPUs, cores, cpu)
+	ram := fmt.Sprintf(m.l("ОЗУ %.1f / %.1f GB доступно", "RAM %.1f / %.1f GB available"), gb(s.Available), gb(s.Memory))
+	second := fmt.Sprintf(m.l("Диск / %.1f GB свободно из %.1f · %.0f%% · SWAP %.1f GB", "Disk / %.1f GB free of %.1f · %.0f%% · SWAP %.1f GB"), gb(s.Free), gb(s.Disk), s.DiskPercent, gb(s.Swap))
+	network := fmt.Sprintf("IPv4 %s  ·  IPv6 %s", s.IPv4, s.IPv6)
+	if m.contentWidth() < 58 {
+		return first + "\n" + muted.Render(ram) + "\n" + muted.Render(second) + "\n" + muted.Render(network)
+	}
+	return first + "  ·  " + muted.Render(ram) + "\n" + muted.Render(second) + "\n" + muted.Render(network)
 }
