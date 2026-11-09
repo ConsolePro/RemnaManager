@@ -58,7 +58,7 @@ if [[ -f $VERSION_REQUEST ]]; then
     printf 'Предыдущее обновление не завершено. Выберите версию повторно в пункте 7.\n'
     rm -f -- "$VERSION_REQUEST"
 fi
-printf 'Повторный запуск: remna_manager. Сокращение rm без аргументов — в новой Bash-сессии root.\n'
+printf 'Повторный запуск: remna_manager или re.\n'
 if [[ -f $ROOT/telegram.json && -f /etc/systemd/system/remnamanager-monitor.service ]] && grep -q 'python3' /etc/systemd/system/remnamanager-monitor.service; then monitor_units; fi
 set +e
 main_menu

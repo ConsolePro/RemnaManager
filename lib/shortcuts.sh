@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-# Sourced only by interactive root Bash; never installed over the system rm.
+# Migrate the previous managed shortcut; executable launchers need no aliases.
 [[ $- == *i* && $EUID == 0 ]] || return 0
-# The function keyword prevents expansion of an existing user alias here.
-function rm {
-    if (($# == 0)); then
-        remna_manager
-    else
-        command rm "$@"
-    fi
-}
+legacy_rm=$(declare -f rm 2>/dev/null) || legacy_rm=''
+if [[ $legacy_rm == *'remna_manager'* && $legacy_rm == *'command rm "$@"'* && $legacy_rm == *'(($# == 0))'* ]]; then
+    unset -f rm
+fi
+unset legacy_rm
