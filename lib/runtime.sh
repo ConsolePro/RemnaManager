@@ -5,6 +5,31 @@ PANEL=${RM_PANEL:-/opt/remnawave}
 SUB=$PANEL/subscription
 CHECKER=$ROOT/checker
 STATE=$ROOT/state.json
+RM_DEBUG=${RM_DEBUG:-0}
+log_init() {
+    [[ -n ${RM_LOG_FILE:-} ]] && return 0
+    mkdir -p "$ROOT/logs"
+    chmod 700 "$ROOT/logs"
+    RM_LOG_FILE=$(mktemp "$ROOT/logs/operation-$(date +%Y%m%d-%H%M%S).XXXXXXXX.log")
+    chmod 600 "$RM_LOG_FILE"
+    export RM_LOG_FILE RM_DEBUG
+}
+step() {
+    local label=$1 status input=/dev/null
+    shift
+    log_init
+    [[ ${RM_STEP_STDIN:-0} != 1 ]] || input=/dev/stdin
+    printf '  […] %s\n' "$label" >&2
+    if [[ $RM_DEBUG == 1 ]]; then
+        printf '+ ' >&2; printf '%q ' "$@" >&2; printf '\n' >&2
+        if "$@" <"$input" 2>&1 | tee -a "$RM_LOG_FILE" >&2; then status=0; else status=$?; fi
+    else
+        if "$@" <"$input" >>"$RM_LOG_FILE" 2>&1; then status=0; else status=$?; fi
+    fi
+    if ((status)); then printf '  [✗] %s. Подробности: %s\n' "$label" "$RM_LOG_FILE" >&2
+    else printf '  [✓] %s\n' "$label" >&2; fi
+    return "$status"
+}
 
 die() { printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "Не найдена команда: $1"; }
@@ -39,7 +64,9 @@ confirm() {
     local answer
     printf '%s Введите ДА: ' "$*" >&2
     IFS= read -r answer || return 1
-    [[ $answer == ДА ]]
+    answer=$(printf '%s' "$answer" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    # C locale cannot lowercase Cyrillic; accept its case variants explicitly.
+    case ${answer,,} in ДА|Да|дА|да|Д|д|yes|y|1) return 0;; *) return 1;; esac
 }
 menu() {
     if declare -F ui_menu >/dev/null; then ui_menu "$@"; return; fi
@@ -91,12 +118,24 @@ env_set() {
     [[ $key =~ ^[A-Z_][A-Z_0-9]*$ && $value != *$'\n'* && $value != *$'\r'* ]] || die 'Неверное значение .env.'
     { if [[ -f $path ]]; then awk -v k="$key" 'index($0,k "=") != 1' "$path"; fi; printf '%s=%s\n' "$key" "$value"; } | save "$path"
 }
-compose() { local directory=$1; shift; docker compose --project-directory "$directory" "$@"; }
+compose() {
+    local directory=$1 label
+    shift
+    case ${1:-} in
+        pull) label='Загружаю образы контейнеров';;
+        up) label='Создаю и запускаю контейнеры';;
+        config) label='Проверяю конфигурацию контейнеров';;
+        stop|down) label='Останавливаю контейнеры';;
+        start|restart) label='Запускаю контейнеры';;
+        *) docker compose --project-directory "$directory" "$@"; return;;
+    esac
+    step "$label" docker compose --project-directory "$directory" "$@"
+}
 download() {
     local url=$1 target=$2 temporary
     mkdir -p -- "$(dirname -- "$target")"
     temporary=$(mktemp "${target}.download.XXXXXXXX")
-    if curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 --max-filesize 134217728 "$url" -o "$temporary"; then
+    if step 'Загружаю необходимые файлы' curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 --max-filesize 134217728 "$url" -o "$temporary"; then
         chmod 600 "$temporary"; mv -f -- "$temporary" "$target"
     else rm -f -- "$temporary"; return 1; fi
 }
@@ -116,7 +155,15 @@ api() {
         rm -f -- "$headers" "$response"; die "API $method $path: ошибка соединения."
     fi
     rm -f -- "$headers"
-    if [[ $code != 2?? ]]; then rm -f -- "$response"; die "API $method $path: HTTP $code. Проверьте версию панели и токен."; fi
+    if [[ $code == 404 && $method == DELETE && ${API_ALLOW_NOT_FOUND:-0} == 1 ]]; then rm -f "$response"; return 0; fi
+    if [[ $code != 2?? ]]; then
+        log_init
+        printf 'API %s %s HTTP %s\n' "$method" "$path" "$code" >>"$RM_LOG_FILE"
+        jq '{statusCode,errorCode,message}' "$response" >>"$RM_LOG_FILE" 2>/dev/null || true
+        if [[ $RM_DEBUG == 1 ]]; then jq '{statusCode,errorCode,message}' "$response" >&2 2>/dev/null || true; fi
+        rm -f -- "$response"
+        die "API $method $path: HTTP $code. Подробности: $RM_LOG_FILE"
+    fi
     if [[ -s $response ]]; then
         if ! jq -e 'has("response")' "$response" >/dev/null; then rm -f -- "$response"; die 'API: неожиданный формат ответа.'; fi
         jq '.response' "$response"
@@ -134,3 +181,4 @@ wait_http() {
     die "Приложение не отвечает: $url (последний HTTP-код: $code). Проверьте логи контейнера."
 }
 nodes() { api GET /nodes | jq 'if type == "array" then . else .nodes end'; }
+api_delete() { API_ALLOW_NOT_FOUND=1 api DELETE "$1"; }

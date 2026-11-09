@@ -14,6 +14,15 @@ source "$APP_DIR/lib/menu.sh"
 source "$APP_DIR/lib/install.sh"
 source "$APP_DIR/lib/versions.sh"
 source "$APP_DIR/lib/ui.sh"
+source "$APP_DIR/lib/warp.sh"
+source "$APP_DIR/lib/topology.sh"
+# Debug changes subprocess output only; shell tracing would expose secrets.
+arguments=()
+for argument in "$@"; do
+    if [[ $argument == --debug ]]; then RM_DEBUG=1; else arguments+=("$argument"); fi
+done
+export RM_DEBUG
+set -- "${arguments[@]}"
 if [[ ${1:-} == --version ]]; then current_version; exit 0; fi
 if [[ ${1:-} == --check ]]; then
     for file in "$APP_DIR"/*.sh "$APP_DIR"/lib/*.sh; do bash -n "$file"; done
@@ -27,7 +36,7 @@ chmod 700 "$ROOT"
 if [[ ${1:-} == --operation ]]; then
     shift
     case ${1:-} in
-        panel_install|panel_update|credentials|backup|token_change|sub_install|sub_update|sub_custom|node_add|pending|node_action|warp_action|checker_install|checker_update|checker_status|telegram|checker_remove|plugin_action|service|versions_prepare|versions_prepare_rollback)
+        panel_install|panel_update|credentials|backup|token_change|sub_install|sub_update|sub_custom|node_add|pending|node_action|warp_action|checker_install|checker_update|checker_status|telegram|checker_remove|plugin_action|service|versions_prepare|versions_prepare_rollback|balancer_create|bridge_create|topology_remove)
             action=$1; shift
             need jq
             "$action" "$@";;
@@ -35,7 +44,7 @@ if [[ ${1:-} == --operation ]]; then
     esac
     exit 0
 fi
-case ${1:-} in ''|--notify) ;; *) die 'Использование: bash manager.sh [--check|--notify|--version]';; esac
+case ${1:-} in ''|--notify) ;; *) die 'Использование: remna_manager [--debug] [--check|--notify|--version]';; esac
 lock=manager
 [[ ${1:-} != --notify ]] || lock=notify
 exec 9>"$ROOT/$lock.lock"

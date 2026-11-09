@@ -42,13 +42,15 @@ ssh_deploy() {
     ssh_options "$1"
     ssh_connect
     # The agent consists only of Shell sources; no interpreter installation on the node.
-    tar -czf - -C "$APP_DIR" agent.sh lib/runtime.sh lib/render.sh lib/provision.sh |
+    tar -czf - -C "$APP_DIR" agent.sh lib/runtime.sh lib/render.sh lib/provision.sh lib/warp.sh LICENSES/warp-native-MIT.txt |
         ssh_command 'set -eu; umask 077; mkdir -p /opt/remnamanager-agent; tar xzf - -C /opt/remnamanager-agent'
 }
 ssh_job() {
     local node=$1 job=$2
     if [[ ${3:-deploy} == deploy ]]; then ssh_deploy "$node"; else ssh_options "$node"; fi
-    printf '%s\n' "$job" | ssh_command 'bash /opt/remnamanager-agent/agent.sh'
+    local remote='RM_DEBUG=0 bash /opt/remnamanager-agent/agent.sh'
+    [[ $RM_DEBUG != 1 ]] || remote='RM_DEBUG=1 bash /opt/remnamanager-agent/agent.sh'
+    jq --argjson debug "$([[ $RM_DEBUG == 1 ]] && printf true || printf false)" '. + {debug:$debug}' <<<"$job" | ssh_command "$remote"
 }
 connection() {
     local node=$1 uuid stored address ssh_port

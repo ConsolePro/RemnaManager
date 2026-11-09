@@ -21,6 +21,8 @@ source lib/monitor.sh
 source lib/menu.sh
 source lib/versions.sh
 source lib/ui.sh
+source lib/warp.sh
+source lib/topology.sh
 fail() { printf 'ASSERTION FAILED: %s\n' "$*" >&2; exit 1; }
 equal() { [[ $1 == "$2" ]] || fail "expected [$2], got [$1]"; }
 contains() { [[ $1 == *"$2"* ]] || fail "missing [$2]"; }
@@ -135,8 +137,8 @@ test_api_errors() {
     [[ $(cat "$ROOT/request-headers") != *'X-Remnawave-Client-Type'* ]] || fail 'ordinary API token marked as browser'
     API_ADMIN=1 api POST /tokens '{}' >/dev/null
     contains "$(cat "$ROOT/request-headers")" 'X-Remnawave-Client-Type: browser'
-    export -f api state_get curl mock_api_curl die
-    export ROOT STATE MOCK_API_CODE=400
+    export -f api state_get curl mock_api_curl die log_init
+    export ROOT STATE RM_DEBUG MOCK_API_CODE=400
     if bash -c 'set -euo pipefail; api POST /tokens "{}"' >"$ROOT/api-log" 2>&1; then fail 'API error accepted'; fi
     contains "$(cat "$ROOT/api-log")" 'HTTP 400'
     [[ $(cat "$ROOT/api-log") != *DO_NOT_ECHO_SECRET* ]] || fail 'secret echoed'
@@ -167,7 +169,7 @@ resume_worker() {
         case $1:$2 in
             GET:/keygen) printf '{"secretKey":"node-secret"}';;
             POST:/config-profiles) printf '{"uuid":"00000000-0000-0000-0000-000000000001"}';;
-            GET:/config-profiles/*/inbounds) printf '{"inbounds":[{"tag":"VLESS_REALITY","uuid":"00000000-0000-0000-0000-000000000002"}]}';;
+            GET:/config-profiles/*/inbounds) jq -n --arg tag "$(json_get "$ROOT/pending/test.json" .inbound_tag)" '{inbounds:[{tag:$tag,uuid:"00000000-0000-0000-0000-000000000002"}]}';;
             POST:/nodes) printf '{"uuid":"00000000-0000-0000-0000-000000000003"}';;
             POST:/hosts) if [[ ! -f $ROOT/retry ]]; then die 'simulated API outage'; fi; printf '{"uuid":"00000000-0000-0000-0000-000000000004"}';;
             POST:/internal-squads) printf '{"uuid":"00000000-0000-0000-0000-000000000005"}';;
@@ -248,7 +250,7 @@ test_version_catalog() {
     if version_newer 1.0.0 1.0.0; then fail 'equal version considered newer'; fi
     if version_valid '../outside'; then fail 'unsafe version accepted'; fi
     curl() {
-        printf '[{"name":"v1.9.9","commit":{"sha":"1111111111111111111111111111111111111111"}},{"name":"v1.10.0","commit":{"sha":"2222222222222222222222222222222222222222"}},{"name":"untrusted","commit":{"sha":"bad"}}]'
+        printf '[{"tag_name":"v1.9.9","target_commitish":"1111111111111111111111111111111111111111"},{"tag_name":"v1.10.0","target_commitish":"2222222222222222222222222222222222222222"},{"tag_name":"v9.0.0","target_commitish":"main","draft":true},{"tag_name":"untrusted","target_commitish":"main"}]'
     }
     versions_refresh
     equal "$(jq -r '.tags[0].version' "$VERSION_CACHE")" 1.10.0
@@ -261,6 +263,58 @@ test_version_catalog() {
     equal "$(jq -r .ok "$VERSION_CACHE")" false
     contains "$(version_notice)" 'по сохранённой проверке'
     equal "$(jq -r '.tags[0].sha' "$VERSION_CACHE")" 2222222222222222222222222222222222222222
+}
+test_confirmations() {
+    local answer
+    for answer in ДА да '  ДА ' yes y; do confirm 'Подтвердить?' <<<"$answer" || fail 'confirmation rejected'; done
+    if confirm 'Подтвердить?' <<<нет; then fail 'negative confirmation accepted'; fi
+    if confirm 'Подтвердить?' </dev/null; then fail 'EOF confirmation accepted'; fi
+}
+test_step_output() {
+    step 'Тест этапа' bash -c 'printf COMMAND-DATA; printf COMMAND-ERROR >&2' >"$ROOT/quiet" 2>&1
+    [[ $(cat "$ROOT/quiet") != *COMMAND-DATA* && $(cat "$ROOT/quiet") != *COMMAND-ERROR* ]] || fail 'raw command output leaked'
+    contains "$(cat "$ROOT/quiet")" 'Тест этапа'
+    contains "$(cat "$RM_LOG_FILE")" COMMAND-DATA
+    RM_DEBUG=1 step 'Отладка' bash -c 'printf DEBUG-DATA' >"$ROOT/debug" 2>&1
+    contains "$(cat "$ROOT/debug")" DEBUG-DATA
+    printf 'ДА\n' | { step 'Не читаю ввод меню' cat; confirm 'Продолжить?'; }
+}
+test_native_warp() {
+    cat <<'EOF' >"$ROOT/wgcf-profile.conf"
+[Interface]
+PrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+Address = 172.16.0.2/32, fd01::2/128
+DNS = 1.1.1.1
+[Peer]
+PublicKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+AllowedIPs = 0.0.0.0/0, ::/0
+EOF
+    warp_profile "$ROOT/wgcf-profile.conf" >"$ROOT/warp.conf"
+    contains "$(cat "$ROOT/warp.conf")" 'Table = off'
+    contains "$(cat "$ROOT/warp.conf")" 'fwmark 51888'
+    [[ $(cat "$ROOT/warp.conf") != *DNS* && $(cat "$ROOT/warp.conf") != *'::/0'* ]] || fail 'native WARP changed system DNS or IPv6 route'
+    warp_config true '["example.org"]' < <(reality_config node.example.org key short) |
+        jq -e '.outbounds[]|select(.tag=="RM_WARP")|.protocol=="freedom" and .streamSettings.sockopt.interface=="warp" and .streamSettings.sockopt.mark==51888' >/dev/null
+}
+test_bridge_render() {
+    local original routed restored
+    original=$(reality_config node.example.org key short | jq '.routing.rules += [{domain:["domain:custom.example"],outboundTag:"DIRECT"},{network:"tcp,udp",outboundTag:"DIRECT"}]')
+    routed=$(bridge_config '{"tag":"RM_BRIDGE","protocol":"vless"}' true <<<"$original")
+    jq -e '.routing.rules[0].ip==["geoip:private"] and .routing.rules[1].domain==["geosite:category-ru"] and .routing.rules[2].ip==["geoip:ru"] and .routing.rules[-2].outboundTag=="RM_BRIDGE"' <<<"$routed" >/dev/null
+    restored=$(bridge_config '{}' false <<<"$routed" | jq 'del(.routing.domainStrategy)')
+    equal "$(jq -S . <<<"$restored")" "$(jq -S . <<<"$original")"
+}
+test_balancer_render() {
+    local value
+    value=$(printf '{"dns":{"servers":["9.9.9.9"]},"routing":{"rules":[{"domain":["domain:custom.example"],"outboundTag":"direct"},{"network":"tcp,udp","outboundTag":"proxy"}]}}' | balancer_template '["one","two"]')
+    jq -e '.remnawave.injectHosts[0].selector.values==["one","two"] and .routing.balancers[0].strategy.type=="leastPing" and .routing.balancers[0].fallbackTag=="RM_BALANCE_BLOCK" and .routing.rules[-1].balancerTag=="RM_BALANCE" and .routing.rules[0].domain==["domain:custom.example"] and .dns.servers==["9.9.9.9"]' <<<"$value" >/dev/null
+}
+test_reality_key() {
+    local private expected
+    openssl genpkey -algorithm X25519 -outform DER >"$ROOT/key.der"
+    private=$(tail -c 32 "$ROOT/key.der" | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+    expected=$(openssl pkey -inform DER -in "$ROOT/key.der" -pubout -outform DER | tail -c 32 | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+    equal "$(reality_public_key "$private")" "$expected"
 }
 test_distribution() {
     local archive=$ROOT/app.tar file digest

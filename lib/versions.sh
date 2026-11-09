@@ -28,9 +28,9 @@ versions_refresh() {
     local response old='{}' now tags cache
     now=$(date +%s)
     if [[ -f $VERSION_CACHE ]] && jq -e 'type=="object"' "$VERSION_CACHE" >/dev/null 2>&1; then old=$(cat "$VERSION_CACHE"); fi
-    if response=$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 2 --max-time 4 --max-filesize 1048576 -H 'Accept: application/vnd.github+json' -H 'User-Agent: RemnaManager' 'https://api.github.com/repos/OverlayNode/RemnaManager/tags?per_page=100' 2>/dev/null) &&
-        tags=$(jq -ce 'if type!="array" then error("invalid tags") else [.[] | select((.name|test("^v[0-9]{1,5}\\.[0-9]{1,5}\\.[0-9]{1,5}$")) and (.commit.sha|test("^[a-f0-9]{40}$"))) | {version:(.name|ltrimstr("v")),tag:.name,sha:.commit.sha}] | sort_by(.version|split(".")|map(tonumber)) | reverse end' <<<"$response"); then
-        cache=$(jq -n --argjson now "$now" --argjson tags "$tags" '{last_attempt:$now,last_success:$now,ok:true,tags:$tags}')
+    if response=$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 2 --max-time 4 --max-filesize 4194304 -H 'Accept: application/vnd.github+json' -H 'User-Agent: RemnaManager' 'https://api.github.com/repos/OverlayNode/RemnaManager/releases?per_page=100' 2>/dev/null) &&
+        tags=$(jq -ce 'if type!="array" then error("invalid releases") else [.[] | select(.draft!=true and .prerelease!=true and (.tag_name|test("^v[0-9]{1,5}\\.[0-9]{1,5}\\.[0-9]{1,5}$"))) | {version:(.tag_name|ltrimstr("v")),tag:.tag_name,sha:(if (.target_commitish|test("^[a-f0-9]{40}$")) then .target_commitish else null end),notes:.body,url:.html_url}] | sort_by(.version|split(".")|map(tonumber)) | reverse end' <<<"$response"); then
+        cache=$(jq -n --argjson now "$now" --argjson tags "$tags" '{source:"releases",last_attempt:$now,last_success:$now,ok:true,tags:$tags}')
         printf '%s\n' "$cache" | save "$VERSION_CACHE" || return 1
         return 0
     fi
@@ -41,6 +41,7 @@ versions_refresh() {
 versions_check_cached() {
     local last=0 now
     if [[ -f $VERSION_CACHE ]]; then last=$(jq -r '.last_attempt // 0' "$VERSION_CACHE" 2>/dev/null) || last=0; fi
+    if [[ -f $VERSION_CACHE && $(jq -r '.source // empty' "$VERSION_CACHE" 2>/dev/null) != releases ]]; then last=0; fi
     [[ $last =~ ^[0-9]{1,12}$ ]] || last=0
     now=$(date +%s)
     if ((now-last >= 900 || now < last)); then versions_refresh || true; fi
@@ -85,19 +86,25 @@ bundle_extract() {
     done <"$destination/app/app-files.txt"
 }
 versions_prepare() {
-    local selected=$1 sha version stage actual
+    local selected=$1 sha version stage actual tag
     version=$(jq -er .version <<<"$selected")
-    sha=$(jq -er .sha <<<"$selected")
+    sha=$(jq -r '.sha // empty' <<<"$selected")
     version_valid "$version" || die 'Некорректная версия.'
-    [[ $sha =~ ^[a-f0-9]{40}$ ]] || die 'Некорректный commit версии.'
     if ! confirm "Установить RemnaManager v$version? Текущая версия будет сохранена для отката."; then return; fi
     mkdir -p "$ROOT/updates"
     stage=$(mktemp -d "$ROOT/updates/stage.XXXXXXXX")
+    if [[ -z $sha ]]; then
+        tag=$(jq -er .tag <<<"$selected")
+        [[ $tag == "v$version" ]] || die 'Некорректный Release.'
+        download "https://api.github.com/repos/OverlayNode/RemnaManager/commits/$tag" "$stage/commit.json"
+        sha=$(json_get "$stage/commit.json" .sha)
+    fi
+    [[ $sha =~ ^[a-f0-9]{40}$ ]] || die 'Некорректный commit версии.'
     download "https://raw.githubusercontent.com/OverlayNode/RemnaManager/$sha/dist/remnamanager.sh" "$stage/installer.sh"
     bundle_extract "$stage/installer.sh" "$stage"
     IFS= read -r actual <"$stage/app/VERSION"
     [[ $actual == "$version" ]] || die 'Версия внутри архива не совпадает с выбранной.'
-    bash "$stage/app/manager.sh" --check || die 'Новая версия не прошла проверку запуска. Текущий код сохранён.'
+    step 'Проверяю запуск новой версии' bash "$stage/app/manager.sh" --check || die 'Новая версия не прошла проверку запуска. Текущий код сохранён.'
     jq -n --arg stage "$stage" --arg version "$version" '{stage:$stage,version:$version}' | save "$VERSION_REQUEST"
 }
 versions_prepare_rollback() {
@@ -109,7 +116,7 @@ versions_prepare_rollback() {
     stage=$(mktemp -d "$ROOT/updates/stage.XXXXXXXX")
     cp -a -- "$ROOT/versions/$snapshot/app" "$stage/app"
     [[ -f $stage/app/manager.sh ]] || die 'В копии нет менеджера.'
-    bash "$stage/app/manager.sh" --check || die 'Сохранённая версия не прошла проверку запуска.'
+    step 'Проверяю запуск сохранённой версии' bash "$stage/app/manager.sh" --check || die 'Сохранённая версия не прошла проверку запуска.'
     jq -n --arg stage "$stage" --arg version "$version" '{stage:$stage,version:$version}' | save "$VERSION_REQUEST"
 }
 versions_activate() {
@@ -134,7 +141,7 @@ versions_activate() {
         die 'Не удалось установить новую версию; прежний каталог возвращён.'
     fi
     rm -f -- "$VERSION_REQUEST"
-    rm -f -- "$resolved/installer.sh" "$resolved/payload.tar"
+    rm -f -- "$resolved/installer.sh" "$resolved/payload.tar" "$resolved/commit.json"
     rmdir -- "$resolved" 2>/dev/null || true
     flock -u 8
     exec 8>&-

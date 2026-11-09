@@ -12,7 +12,7 @@ node_add() {
     finish_node "$journal"
 }
 finish_node() {
-    local journal=$1 data response key config uuid profile inbound attempt field
+    local journal=$1 data response key config uuid profile inbound attempt field tag
     [[ -f $journal ]] || die 'Журнал установки не найден.'
     data=$(cat "$journal")
     ssh_deploy "$data"
@@ -24,8 +24,10 @@ finish_node() {
     data=$(cat "$journal")
     ssh_job "$data" "$(jq '{action:"install",secret,domain,email,panel_ip}' <<<"$data")" no-deploy
     if [[ -z $(jq -r '.profile // empty' "$journal") ]]; then
+        tag=$(jq -r '.inbound_tag // empty' "$journal")
+        if [[ -z $tag ]]; then tag=RM_REALITY_$(random_hex 6); json_edit "$journal" '.inbound_tag=$tag' --arg tag "$tag"; fi
         key=$(openssl genpkey -algorithm X25519 -outform DER | tail -c 32 | openssl base64 -A | tr '+/' '-_' | tr -d '=')
-        config=$(reality_config "$(json_get "$journal" .domain)" "$key" "$(random_hex 8)")
+        config=$(reality_config "$(json_get "$journal" .domain)" "$key" "$(random_hex 8)" "$tag")
         response=$(api POST /config-profiles "$(jq -n --arg name "RM_$(random_hex 6)" --argjson config "$config" '{name:$name,config:$config}')")
         field=$(jq -er .uuid <<<"$response"); valid_uuid "$field"
         json_edit "$journal" '.profile = $uuid' --arg uuid "$field"
@@ -33,7 +35,8 @@ finish_node() {
     profile=$(json_get "$journal" .profile); valid_uuid "$profile"
     if [[ -z $(jq -r '.inbound // empty' "$journal") ]]; then
         response=$(api GET "/config-profiles/$profile/inbounds")
-        inbound=$(jq -er '[.inbounds[] | select(.tag == "VLESS_REALITY")][0].uuid // empty' <<<"$response")
+        tag=$(jq -r '.inbound_tag // "VLESS_REALITY"' "$journal")
+        inbound=$(jq -er --arg tag "$tag" '[.inbounds[] | select(.tag == $tag)][0].uuid // empty' <<<"$response")
         valid_uuid "$inbound"
         json_edit "$journal" '.inbound = $uuid' --arg uuid "$inbound"
     fi
@@ -145,9 +148,10 @@ warp_route() {
         IFS=, read -r -a values <<<"$raw"
         for item in "${values[@]}"; do item=$(domain "$item"); domains=$(jq --arg item "$item" '. + [$item]' <<<"$domains"); done
         transport=$(connection "$node"); ssh_deploy "$transport"
-        ssh_command "bash -o pipefail -c 'curl --fail --silent --max-time 15 --socks5-hostname 127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -q \"^warp=on\"'"
+        ssh_command "bash -o pipefail -c 'wg show warp >/dev/null && curl --fail --silent --max-time 15 --interface warp https://www.cloudflare.com/cdn-cgi/trace | grep -Eq \"^warp=(on|plus)\"'"
     fi
     config=$(jq '.config' <<<"$response" | warp_config "$enabled" "$domains")
+    if [[ $enabled == true ]]; then ssh_job "$transport" "$(jq -n --argjson config "$config" '{action:"validate-config",config:$config}')" no-deploy; fi
     printf '%s\n' "$response" | save "$ROOT/backups/profile-$profile-$(date +%s)-$$.json"
     api PATCH /config-profiles "$(jq -n --arg uuid "$profile" --argjson config "$config" '{uuid:$uuid,config:$config}')" >/dev/null
     state_edit '.nodes[$uuid].warp = $enabled' --arg uuid "$uuid" --argjson enabled "$enabled"

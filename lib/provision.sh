@@ -12,11 +12,11 @@ platform_check() {
 bootstrap() {
     platform_check
     if ! command -v jq >/dev/null || ! command -v curl >/dev/null || ! command -v openssl >/dev/null || ! command -v ssh-keygen >/dev/null || ! command -v ip >/dev/null; then
-        apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl jq openssl openssh-client iproute2
+        step 'Обновляю список пакетов' apt-get update
+        DEBIAN_FRONTEND=noninteractive step 'Устанавливаю служебные пакеты' apt-get install -y ca-certificates curl jq openssl openssh-client iproute2
     fi
 }
-nginx_reload() { nginx -t && systemctl reload nginx; }
+nginx_reload() { step 'Проверяю Nginx' nginx -t && step 'Применяю конфигурацию Nginx' systemctl reload nginx; }
 nginx_write() {
     local path=$1 old existed=0
     old=$(mktemp "$ROOT/nginx-backup.XXXXXXXX")
@@ -30,9 +30,9 @@ nginx_write() {
 packages() {
     local role=${1:-panel} common=/etc/nginx/conf.d/remnamanager-common.conf reject version
     platform_check
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl jq openssl gnupg nginx certbot openssh-client nftables unzip util-linux
-    if command -v docker >/dev/null; then docker compose version
+    step 'Обновляю список пакетов' apt-get update
+    DEBIAN_FRONTEND=noninteractive step 'Устанавливаю пакеты сервера' apt-get install -y ca-certificates curl jq openssl gnupg nginx certbot openssh-client nftables unzip util-linux
+    if command -v docker >/dev/null; then step 'Проверяю Docker Compose' docker compose version
     else
         mkdir -p /etc/apt/keyrings
         chmod 755 /etc/apt/keyrings
@@ -40,17 +40,17 @@ packages() {
         chmod 644 /etc/apt/keyrings/docker.asc
         printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/%s %s stable\n' "$(dpkg --print-architecture)" "$OS_ID" "$OS_CODENAME" | save /etc/apt/sources.list.d/remnamanager-docker.list
         chmod 644 /etc/apt/sources.list.d/remnamanager-docker.list
-        apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+        step 'Обновляю репозиторий Docker' apt-get update
+        DEBIAN_FRONTEND=noninteractive step 'Устанавливаю Docker' apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
     fi
-    systemctl enable --now docker nginx
+    step 'Включаю Docker и Nginx' systemctl enable --now docker nginx
     if [[ -L /etc/nginx/sites-enabled/default && $(readlink -f /etc/nginx/sites-enabled/default) == /etc/nginx/sites-available/default ]]; then rm /etc/nginx/sites-enabled/default; fi
     if [[ ! -f $common ]]; then
         reject='ssl_reject_handshake on;'
         version=$(nginx -v 2>&1 | sed -n 's/.*nginx\/\([0-9.]*\).*/\1/p')
         if [[ $role == panel ]] && ! dpkg --compare-versions "${version:-0}" ge 1.19.4; then
             if [[ ! -f $ROOT/default.key || ! -f $ROOT/default.crt ]]; then
-                openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj /CN=localhost -keyout "$ROOT/default.key" -out "$ROOT/default.crt" >/dev/null 2>&1
+                step 'Подготавливаю резервный TLS-сертификат' openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj /CN=localhost -keyout "$ROOT/default.key" -out "$ROOT/default.crt"
             fi
             reject="ssl_certificate $ROOT/default.crt; ssl_certificate_key $ROOT/default.key; return 444;"
         fi
@@ -67,7 +67,7 @@ packages() {
     nginx_reload
     printf '%s\n' '#!/bin/sh' 'set -eu' '/usr/sbin/nginx -t' '/bin/systemctl reload nginx' | save /etc/letsencrypt/renewal-hooks/deploy/remnamanager-nginx
     chmod 700 /etc/letsencrypt/renewal-hooks/deploy/remnamanager-nginx
-    systemctl enable --now certbot.timer
+    step 'Включаю автоматическое продление сертификатов' systemctl enable --now certbot.timer
 }
 site() {
     local name email=$2 upstream=${3:-} gate=${4:-} role=${5:-panel} dest conf
@@ -79,7 +79,7 @@ site() {
     chmod 755 /var/www/remnamanager-acme /var/www/remnamanager "$dest"
     if [[ ! -f $dest/index.html ]]; then site_html | save "$dest/index.html"; chmod 644 "$dest/index.html"; fi
     if [[ ! -f $conf ]]; then http_site "$name" | nginx_write "$conf"; fi
-    certbot certonly --webroot -w /var/www/remnamanager-acme -d "$name" --email "$email" --agree-tos --non-interactive --keep-until-expiring
+    step "Выпускаю сертификат для $name" certbot certonly --webroot -w /var/www/remnamanager-acme -d "$name" --email "$email" --agree-tos --non-interactive --keep-until-expiring
     { http_site "$name"; if [[ $role == node ]]; then tls_site "$name" 8443; else tls_site "$name" 443 "$upstream" "$gate"; fi; } | nginx_write "$conf"
 }
 firewall() {
@@ -117,9 +117,9 @@ ExecReload=$ROOT/node-firewall.sh
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    systemctl enable remnamanager-firewall
-    "$ROOT/node-firewall.sh"
+    step 'Обновляю службу firewall' systemctl daemon-reload
+    step 'Включаю защиту API ноды' systemctl enable remnamanager-firewall
+    step 'Применяю правила firewall' "$ROOT/node-firewall.sh"
 }
 node_install() {
     local job=$1
@@ -137,29 +137,6 @@ node_install() {
     compose /opt/remnanode up -d --wait --wait-timeout 120
     jq '{panel_ip,domain,email}' <<<"$job" | save "$ROOT/node.json"
 }
-warp_install() {
-    local attempt
-    platform_check
-    mkdir -p /etc/apt/keyrings
-    chmod 755 /etc/apt/keyrings
-    download https://pkg.cloudflareclient.com/pubkey.gpg "$ROOT/cloudflare-key.asc"
-    gpg --batch --yes --dearmor --output /etc/apt/keyrings/cloudflare-warp.gpg "$ROOT/cloudflare-key.asc"
-    chmod 644 /etc/apt/keyrings/cloudflare-warp.gpg
-    printf 'deb [signed-by=/etc/apt/keyrings/cloudflare-warp.gpg] https://pkg.cloudflareclient.com/ %s main\n' "$OS_CODENAME" | save /etc/apt/sources.list.d/remnamanager-warp.list
-    chmod 644 /etc/apt/sources.list.d/remnamanager-warp.list
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y cloudflare-warp
-    systemctl enable --now warp-svc
-    if ! warp-cli --accept-tos registration show >/dev/null 2>&1; then warp-cli --accept-tos registration new; fi
-    warp-cli --accept-tos mode proxy
-    warp-cli --accept-tos proxy port 40000
-    warp-cli --accept-tos connect
-    for ((attempt=0;attempt<12;attempt++)); do
-        if curl --fail --silent --max-time 10 --socks5-hostname 127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -q '^warp=on'; then return; fi
-        sleep 2
-    done
-    die 'WARP не прошёл проверку. Маршрутизация Xray не изменена.'
-}
 xray_update() {
     local asset tag archive checksums digest target override=/opt/remnanode/compose.override.yaml old existed=0 merged
     download https://api.github.com/repos/XTLS/Xray-core/releases/latest "$ROOT/xray-release.json"
@@ -176,7 +153,7 @@ xray_update() {
     target=/opt/remnanode/xray/$tag
     unzip -p "$archive" xray | save "$target"
     chmod 755 "$target"
-    "$target" version
+    step 'Проверяю новое ядро Xray' "$target" version
     old=$(mktemp "$ROOT/xray-override.XXXXXXXX")
     if [[ -f $override ]]; then
         cp "$override" "$old"; existed=1
@@ -184,7 +161,7 @@ xray_update() {
     else printf '{}\n' >"$old"; fi
     merged=$(jq --arg mount "$target:/usr/local/bin/xray:ro" '.services.remnanode.volumes = ([.services.remnanode.volumes[]? | select(if type == "string" then (endswith(":/usr/local/bin/xray:ro")|not) else .target != "/usr/local/bin/xray" end)] + [$mount])' "$old")
     printf '%s\n' "$merged" | save "$override"
-    if compose /opt/remnanode up -d --force-recreate --wait --wait-timeout 90 && sleep 4 && docker exec remnanode /usr/local/bin/xray version; then rm -f "$old"; return; fi
+    if compose /opt/remnanode up -d --force-recreate --wait --wait-timeout 90 && sleep 4 && step 'Проверяю запуск Xray' docker exec remnanode /usr/local/bin/xray version; then rm -f "$old"; return; fi
     if ((existed)); then mv -f "$old" "$override"; else rm -f "$override" "$old"; fi
     compose /opt/remnanode up -d --force-recreate
     die 'Xray не запустился. Прежний override восстановлен.'
@@ -205,12 +182,14 @@ execute_job() {
             else site_html "$(jq -er .style <<<"$job")" | save "/var/www/remnamanager/$name/index.html"; fi
             chmod 644 "/var/www/remnamanager/$name/index.html";;
         xray) xray_update;;
+        validate-config)
+            jq '.config' <<<"$job" | RM_STEP_STDIN=1 step 'Проверяю конфигурацию Xray на ноде' docker exec -i remnanode sh -c 'set -eu; umask 077; file=$(mktemp); trap '\''rm -f "$file"'\'' EXIT; cat >"$file"; /usr/local/bin/xray run -test -config "$file"';;
         warp-install) warp_install;;
-        warp-remove) warp-cli --accept-tos disconnect; apt-get remove -y cloudflare-warp;;
+        warp-remove) warp_remove;;
         bbr)
-            modprobe tcp_bbr
+            step 'Включаю модуль BBR' modprobe tcp_bbr
             printf 'net.core.default_qdisc=fq\nnet.ipv4.tcp_congestion_control=bbr\n' | save /etc/sysctl.d/90-remnamanager-bbr.conf
-            sysctl -p /etc/sysctl.d/90-remnamanager-bbr.conf;;
+            step 'Применяю BBR и fq' sysctl -p /etc/sysctl.d/90-remnamanager-bbr.conf;;
         *) die 'Неизвестная операция агента.';;
     esac
 }

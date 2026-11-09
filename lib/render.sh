@@ -85,7 +85,7 @@ EOF
     printf '}\n'
 }
 reality_config() {
-    jq -n --arg domain "$1" --arg key "$2" --arg short "$3" '{log:{loglevel:"warning"},inbounds:[{tag:"VLESS_REALITY",listen:"0.0.0.0",port:443,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:true},streamSettings:{network:"raw",security:"reality",realitySettings:{show:false,target:"127.0.0.1:8443",xver:0,serverNames:[$domain],privateKey:$key,shortIds:[$short]}}}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{type:"field",ip:["geoip:private"],outboundTag:"BLOCK"}]}}'
+    jq -n --arg domain "$1" --arg key "$2" --arg short "$3" --arg tag "${4:-VLESS_REALITY}" '{log:{loglevel:"warning"},inbounds:[{tag:$tag,listen:"0.0.0.0",port:443,protocol:"vless",settings:{clients:[],decryption:"none"},sniffing:{enabled:true,destOverride:["http","tls","quic"],routeOnly:true},streamSettings:{network:"raw",security:"reality",realitySettings:{show:false,target:"127.0.0.1:8443",xver:0,serverNames:[$domain],privateKey:$key,shortIds:[$short]}}}],outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],routing:{rules:[{type:"field",ip:["geoip:private"],outboundTag:"BLOCK"}]}}'
 }
 node_compose() {
     jq -n --arg secret "$1" '{services:{remnanode:{image:"remnawave/node:latest",container_name:"remnanode",restart:"unless-stopped",network_mode:"host",environment:{NODE_PORT:"2222",SECRET_KEY:$secret},logging:{driver:"json-file",options:{"max-size":"10m","max-file":"3"}}}}}'
@@ -101,6 +101,6 @@ warp_config() {
     jq --argjson enabled "$enabled" --argjson domains "$domains" '
       .outbounds = [(.outbounds // [])[] | select(.tag != "RM_WARP")] |
       .routing.rules = [(.routing.rules // [])[] | select(.outboundTag != "RM_WARP")] |
-      if $enabled then .outbounds += [{tag:"RM_WARP",protocol:"socks",settings:{servers:[{address:"127.0.0.1",port:40000}]}}] |
+      if $enabled then .outbounds += [{tag:"RM_WARP",protocol:"freedom",settings:{},streamSettings:{sockopt:{interface:"warp",mark:51888,domainStrategy:"ForceIPv4",tcpFastOpen:true}}}] |
         .routing.rules = [{type:"field",domain:($domains|map("domain:"+.)),outboundTag:"RM_WARP"}] + .routing.rules else . end'
 }

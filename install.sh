@@ -9,8 +9,18 @@ trap 'rm -rf -- "$temporary"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' HUP TERM
 installer=$temporary/remnamanager.sh
-curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 --max-filesize 16777216 \
-    https://raw.githubusercontent.com/OverlayNode/RemnaManager/refs/heads/main/dist/remnamanager.sh -o "$installer"
+printf '  […] Скачиваю последнюю опубликованную версию RemnaManager\n' >&2
+debug=0
+for argument in "$@"; do [[ $argument != --debug ]] || debug=1; done
+download_release() {
+    curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 --max-filesize 16777216 \
+        https://github.com/OverlayNode/RemnaManager/releases/latest/download/remnamanager.sh -o "$installer"
+}
+if ((debug)); then download_release
+elif ! download_release >"$temporary/download.log" 2>&1; then
+    printf '  [✗] Не удалось скачать Release. Повторите запуск с --debug для подробностей.\n' >&2
+    exit 1
+fi
 if ((EUID == 0)); then
     bash "$installer" "$@"
 else

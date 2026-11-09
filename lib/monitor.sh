@@ -32,8 +32,8 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-    systemctl daemon-reload
-    systemctl enable --now remnamanager-monitor.timer
+    step 'Обновляю службу мониторинга' systemctl daemon-reload
+    step 'Включаю мониторинг нод' systemctl enable --now remnamanager-monitor.timer
 }
 telegram() {
     local token chat

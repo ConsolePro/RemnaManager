@@ -95,12 +95,11 @@ plugins_menu() {
 }
 main_menu() {
     while :; do
-        versions_check_cached
-        dashboard
-        menu 'УПРАВЛЕНИЕ' '1. Панель и компоненты' '2. Ноды и расширения' '3. Страница подписки' '4. WARP Native' '5. Мониторинг нод' '6. Плагины' '7. Версии и обновления' 'r. Обновить показатели' '0. Выход'
+        main_screen_read
         case $CHOICE in
             0) return;; 1) panel_menu;; 2) nodes_menu;; 3) sub_menu;; 4) warp_menu;; 5) checker_menu;; 6) plugins_menu;;
             7) versions_menu; [[ ! -f $VERSION_REQUEST ]] || return;;
+            8) topology_menu;;
         esac
     done
 }

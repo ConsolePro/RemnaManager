@@ -22,7 +22,12 @@ create_subscription_token() {
 panel_install() {
     local name subdomain email ip admin password gate version dbpass staging response auth token manager_token
     if [[ -f $PANEL/docker-compose.yml && -z $(state_get '.panel') ]]; then die 'Найдена чужая установка /opt/remnawave. Перезапись запрещена.'; fi
-    if [[ $(state_get '.panel.ready') == true ]]; then compose "$PANEL" up -d --wait --wait-timeout 180; printf 'Панель уже установлена и запущена.\n'; return; fi
+    if [[ $(state_get '.panel.ready') == true ]]; then
+        compose "$PANEL" up -d --wait --wait-timeout 180
+        printf 'Панель уже установлена и запущена.\n'
+        if [[ $(state_get '.subscription') != true ]] && confirm 'Установить страницу подписки?'; then sub_install preset; fi
+        return
+    fi
     name=$(domain "$(ask 'Домен панели' "$(state_get '.panel.domain')")")
     subdomain=$(domain "$(ask 'Домен страницы подписки' "$(state_get '.panel.sub_domain')")")
     [[ $name != "$subdomain" ]] || die 'Панели и подписке нужны разные домены.'
@@ -80,7 +85,7 @@ panel_install() {
     site "$name" "$email" 3000 "$gate"
     state_edit '.panel.ready = true'
     credentials
-    if confirm 'Сразу установить страницу подписки?'; then sub_install; fi
+    if confirm 'Сразу установить страницу подписки?'; then sub_install preset; fi
 }
 panel_update() {
     local version path=$PANEL/docker-compose.yml old count
@@ -107,7 +112,21 @@ token_change() {
     state_edit '.token = $token' --arg token "$token"
 }
 sub_install() {
-    local token response password
+    local token response password subdomain email
+    [[ -n $(state_get '.panel.domain') ]] || die 'Сначала установите или подключите панель.'
+    subdomain=$(state_get '.panel.sub_domain')
+    email=$(state_get '.panel.email')
+    if [[ ${1:-ask} != preset ]]; then
+        subdomain=$(ask 'Домен страницы подписки' "$subdomain")
+        email=$(ask 'Email для сертификата' "$email")
+    fi
+    subdomain=$(domain "$subdomain")
+    [[ $subdomain != "$(state_get '.panel.domain')" ]] || die 'Панели и подписке нужны разные домены.'
+    [[ $email =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || die 'Неверный email ACME.'
+    state_edit '.panel.sub_domain = $domain | .panel.email = $email | .subscription = false' --arg domain "$subdomain" --arg email "$email"
+    # Provision the public endpoint before waiting on the subscription process.
+    # A startup failure must not silently skip its domain and certificate.
+    site "$subdomain" "$email" 3010
     if [[ -z $(state_get '.subscription_token') ]]; then
         password=$(ask 'Пароль администратора для отдельного токена подписки' '' secret)
         response=$(API_ANONYMOUS=1 api POST /auth/login "$(jq -n --arg username "$(state_get '.panel.admin')" --arg password "$password" '{username:$username,password:$password}')")
@@ -122,13 +141,12 @@ sub_install() {
     env_set "$SUB/.env" TRUST_PROXY 1
     compose "$SUB" config --quiet
     sub_update
-    site "$(state_get '.panel.sub_domain')" "$(state_get '.panel.email')" 3010
     env_set "$PANEL/.env" SUB_PUBLIC_DOMAIN "$(state_get '.panel.sub_domain')"
     compose "$PANEL" up -d --wait --wait-timeout 180
     state_edit '.subscription = true'
     printf 'Страница подписки: https://%s/<shortUuid>\n' "$(state_get '.panel.sub_domain')"
 }
-sub_update() { compose "$SUB" pull; compose "$SUB" up -d --wait --wait-timeout 120; wait_http http://127.0.0.1:3010/; }
+sub_update() { compose "$SUB" pull; compose "$SUB" up -d --wait --wait-timeout 120; wait_http http://127.0.0.1:3010/ -H 'X-Forwarded-Proto: https' -H 'X-Forwarded-For: 127.0.0.1'; }
 sub_custom() {
     local image old
     menu 'Кастомизация подписки' '1. Официальный шаблон' '2. Свой совместимый Docker-образ' '3. Subpage Builder' '0. Назад'

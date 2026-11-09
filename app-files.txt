@@ -14,4 +14,8 @@ lib/install.sh
 lib/shortcuts.sh
 lib/ui.sh
 lib/versions.sh
+lib/warp.sh
+lib/topology.sh
+LICENSES/eGames-MIT.txt
+LICENSES/warp-native-MIT.txt
 README.md

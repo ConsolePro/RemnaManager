@@ -18,6 +18,7 @@ printf '{"nodes":{}}' | save "$STATE"
 # Test version-specific default TLS rejection, the renewal hook, permissions and
 # certificate-based site rendering against nginx's actual configuration parser.
 apt-get() { :; }
+# shellcheck disable=SC2329,SC2317
 docker() { :; }
 systemctl() { :; }
 # shellcheck disable=SC2218
@@ -72,7 +73,7 @@ api() {
     esac
 }
 wait_http() {
-    if [[ $1 == http://127.0.0.1:3000/* ]]; then
+    if [[ $1 == http://127.0.0.1:3000/* || $1 == http://127.0.0.1:3010/* ]]; then
         [[ " $* " == *' X-Forwarded-Proto: https '* && " $* " == *' X-Forwarded-For: 127.0.0.1 '* ]] || die 'Panel readiness omitted production proxy headers.'
     fi
 }
@@ -89,6 +90,11 @@ printf '\n\n\n\n\n' | panel_install >"$ROOT/panel-resume-log"
 [[ $(state_get .panel.password) == "$password" && $(state_get .subscription_token) == subscription-test ]]
 [[ $(wc -l <"$ROOT/manager-tokens-created") == 1 ]]
 printf 'PASS Linux panel resume after manager token checkpoint\n'
+confirm() { bash -c 'source lib/runtime.sh; confirm "$@"' test "$@"; }
+printf '  ДА \n' | panel_install >"$ROOT/sub-auto-log"
+jq -e '.subscription==true' "$STATE" >/dev/null
+grep -q '^sub.example.org admin@example.org 3010' "$ROOT/site-call"
+printf 'PASS automatic subscription setup after typed ДА\n'
 
 # Verify that a failed backend restart restores Compose and leaves its version
 # checkpoint unchanged, with a database/config backup retained.
@@ -103,7 +109,8 @@ grep -q 'image: remnawave/backend:1.2.3' "$PANEL/docker-compose.yml"
 [[ $(state_get .panel.version) == v1.2.3 ]]
 [[ -n $(find "$ROOT/backups" -name database.dump -print -quit) ]]
 unset MOCK_FAIL_UP MOCK_BACKEND_VERSION
-sub_install >"$ROOT/sub-install-log"
+printf 'manual-sub.example.org\nadmin@example.org\n' | sub_install >"$ROOT/sub-install-log"
+grep -q '^manual-sub.example.org admin@example.org 3010' "$ROOT/site-call"
 grep -q '^REMNAWAVE_API_TOKEN=subscription-test$' "$SUB/.env"
 jq -e '.subscription == true' "$STATE" >/dev/null
 printf 'PASS Linux panel rollback, backup and subscription token isolation\n'

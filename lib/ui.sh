@@ -75,7 +75,7 @@ dashboard() {
     ui_line
     printf '  %s%s%s\n' "$UI_YELLOW" "$(version_notice)" "$UI_RESET" >&2
 }
-ui_menu() {
+ui_menu_render() {
     local title=$1 item key label
     shift
     ui_colors
@@ -85,5 +85,35 @@ ui_menu() {
         printf '  %s[%s]%s  %s\n' "$UI_CYAN" "$key" "$UI_RESET" "$label" >&2
     done
     printf '\n  %sВыберите действие › %s' "$UI_BOLD" "$UI_RESET" >&2
-    IFS= read -r CHOICE || CHOICE=0
+}
+ui_menu() { ui_menu_render "$@"; IFS= read -r CHOICE || CHOICE=0; }
+main_screen_render() {
+    dashboard
+    ui_menu_render 'УПРАВЛЕНИЕ' '1. Панель и компоненты' '2. Ноды и расширения' '3. Страница подписки' '4. WARP-Native' '5. Мониторинг нод' '6. Плагины' '7. Версии и обновления' '8. Балансировщики и мосты' 'r. Обновить показатели' '0. Выход'
+}
+main_screen_read() {
+    local buffer='' key status interval=${RM_REFRESH_INTERVAL:-2}
+    versions_check_cached
+    main_screen_render
+    if [[ ! -t 0 || ! -t 2 || ${TERM:-dumb} == dumb || ${RM_LIVE_OFF:-0} == 1 ]]; then
+        IFS= read -r CHOICE || CHOICE=0
+        return
+    fi
+    [[ $interval =~ ^[1-9][0-9]?$ ]] && ((interval <= 30)) || interval=2
+    # Read one character at a time: refreshes cannot consume a half-typed choice.
+    # No background renderer survives this function or writes over other prompts.
+    while :; do
+        if IFS= read -r -s -n 1 -t "$interval" key; then status=0; else status=$?; fi
+        if ((status == 0)); then
+            case $key in
+                ''|$'\n'|$'\r') CHOICE=$buffer; printf '\n' >&2; return;;
+                $'\177'|$'\b') if [[ -n $buffer ]]; then buffer=${buffer%?}; printf '\b \b' >&2; fi;;
+                [0-9rR]) buffer+=$key; printf '%s' "$key" >&2;;
+            esac
+        elif ((status > 128)); then
+            versions_check_cached
+            main_screen_render
+            printf '%s' "$buffer" >&2
+        else CHOICE=0; printf '\n' >&2; return; fi
+    done
 }
