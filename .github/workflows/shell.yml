@@ -1,0 +1,24 @@
+name: Shell checks
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install validation tools
+        run: sudo apt-get update && sudo apt-get install -y jq shellcheck
+      - name: Syntax and dependencies
+        run: bash manager.sh --check
+      - name: ShellCheck
+        run: shellcheck -x remnamanager.sh manager.sh agent.sh build.sh lib/*.sh tests/*.sh
+      - name: Regression tests and distribution
+        run: bash tests/run.sh
+  linux-integration:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: ['debian:12', 'debian:13', 'ubuntu:22.04', 'ubuntu:24.04']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test supported Linux distribution
+        run: docker run --rm -e RM_CONTAINER_TESTS=1 -v "$PWD:/source:ro" '${{ matrix.image }}' bash /source/tests/container.sh

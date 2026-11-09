@@ -1,0 +1,6 @@
+# jq filters, Nginx variables and remote scripts intentionally use literal $.
+disable=SC2016
+# Shared globals are consumed by other sourced modules.
+disable=SC2034
+# A preformatted command is deliberately evaluated by the remote SSH shell.
+disable=SC2029
