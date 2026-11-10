@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"github.com/ConsolePro/RemnaManager/internal/services"
 	"github.com/ConsolePro/RemnaManager/internal/system/stats"
 	"github.com/charmbracelet/lipgloss"
@@ -60,5 +61,19 @@ func TestRenderPreviewArtifacts(t *testing.T) {
 	m.nodeList = []services.Node{{Name: "Amsterdam-01", Address: "192.0.2.10", IsConnected: true}, {Name: "Frankfurt-02", Address: "198.51.100.20", IsDisabled: true}, {Name: "Helsinki-03", Address: "2001:db8::30"}}
 	if err := os.WriteFile(filepath.Join(dir, "nodes.ansi"), []byte(m.View()), 0600); err != nil {
 		t.Fatal(err)
+	}
+	m.nodeTitle = "Установить ноду"
+	m.nodeInstallParams = services.NodeInstallParameters{Name: "Amsterdam-01", Address: "192.0.2.10", Domain: "cover.example.com", PanelIP: "198.51.100.20", SSH: services.NodeSSH{Port: 22}}
+	m.nodeInstallJob = &services.NodeInstallStatus{ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Completed: []bool{true, true, true, true, true, true, true, true, false}, FirewallPending: true, RollbackAt: time.Now().Add(110 * time.Second)}
+	m.nodeInstallStage = 8
+	for _, size := range [][2]int{{124, 36}, {80, 30}} {
+		m.width, m.height = size[0], size[1]
+		m.prepareNodeInstallInputs()
+		for _, screen := range []string{"nodeInstallInput", "nodeInstallProgress", "nodeInstallVerify"} {
+			m.screen = screen
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s-%d.ansi", screen, m.width)), []byte(m.View()), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }

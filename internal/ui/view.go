@@ -15,6 +15,8 @@ var failure = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 
 func (m Model) body() string {
 	switch m.screen {
+	case "nodeInstallInput", "nodeInstallConfirm", "nodeInstallProgress", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult":
+		return m.nodeInstallView()
 	case "menu":
 		f := m.frames[len(m.frames)-1]
 		rows := []string{accent.Render(m.title()), ""}
@@ -138,7 +140,7 @@ func (m Model) viewportBody() string {
 	if m.problem != "" {
 		body += "\n\n" + failure.Render(m.problem)
 	}
-	if strings.HasPrefix(m.screen, "panel") && m.screen != "panelInput" || strings.HasPrefix(m.screen, "nodes") && m.screen != "nodesList" && m.screen != "nodesInput" {
+	if strings.HasPrefix(m.screen, "panel") && m.screen != "panelInput" || strings.HasPrefix(m.screen, "node") && m.screen != "nodesList" && m.screen != "nodesInput" && m.screen != "nodeInstallInput" && m.screen != "nodeInstallPending" {
 		body = ansi.Hardwrap(body, max(1, m.width-6), true)
 	}
 	return body
@@ -175,8 +177,15 @@ func (m Model) View() string {
 		if cursor < vp.YOffset {
 			vp.SetYOffset(cursor)
 		}
-	} else if m.screen == "nodesList" {
+	} else if m.screen == "nodesList" || m.screen == "nodeInstallPending" {
 		cursor := m.nodeCursor + 2
+		if cursor >= vp.YOffset+vp.Height {
+			vp.SetYOffset(cursor - vp.Height + 1)
+		} else if cursor < vp.YOffset {
+			vp.SetYOffset(cursor)
+		}
+	} else if m.screen == "nodeInstallInput" {
+		cursor := 3 + m.focus*2
 		if cursor >= vp.YOffset+vp.Height {
 			vp.SetYOffset(cursor - vp.Height + 1)
 		} else if cursor < vp.YOffset {
@@ -189,7 +198,7 @@ func (m Model) View() string {
 		} else if cursor < vp.YOffset {
 			vp.SetYOffset(cursor)
 		}
-	} else if m.problem != "" && m.screen != "panelResult" && m.screen != "nodesResult" {
+	} else if m.problem != "" && m.screen != "panelResult" && m.screen != "nodesResult" && m.screen != "nodeInstallResult" {
 		vp.GotoBottom()
 	} else if m.screen == "domains" {
 		if m.liveInstall() {
@@ -211,6 +220,16 @@ func (m Model) View() string {
 		hint = m.l("PgUp/PgDn журнал · Enter в меню · Esc назад · F1 выход", "PgUp/PgDn log · Enter menu · Esc back · F1 exit")
 	}
 	switch m.screen {
+	case "nodeInstallInput":
+		hint = m.l("Tab — поле · Enter — далее · Esc — назад", "Tab — field · Enter — next · Esc — back")
+	case "nodeInstallPending":
+		hint = m.l("↑↓ — установка · Enter — продолжить · R — обновить · Esc — назад", "↑↓ — installation · Enter — resume · R — refresh · Esc — back")
+	case "nodeInstallConfirm", "nodeInstallVerify":
+		hint = m.l("Enter — подтвердить · Esc — отменить · F1 — выход", "Enter — confirm · Esc — cancel · F1 — exit")
+	case "nodeInstallProgress":
+		hint = m.l("PgUp/PgDn — этапы · Esc — отменить дальнейшие действия", "PgUp/PgDn — stages · Esc — cancel further actions")
+	case "nodeInstallResult":
+		hint = m.l("PgUp/PgDn — прокрутка · Enter — продолжить / меню", "PgUp/PgDn — scroll · Enter — resume / menu")
 	case "nodesList":
 		hint = m.l("↑↓ — нода · Enter — выбрать · R — обновить · Esc — назад", "↑↓ — node · Enter — select · R — refresh · Esc — back")
 	case "nodesInput":

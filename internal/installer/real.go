@@ -32,6 +32,7 @@ type Real struct {
 	state                         State
 	sshPorts                      []int
 	lock, log                     *os.File
+	controls                      map[string]services.NodeSSH
 }
 
 func NewReal() *Real {
@@ -290,6 +291,12 @@ func (r *Real) Summary() string {
 func (r *Real) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for path, settings := range r.controls {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, _ = r.Runner.Run(ctx, nil, "ssh", "-F", "/dev/null", "-S", path, "-O", "exit", "root@"+settings.Host)
+		cancel()
+	}
+	r.controls = nil
 	if r.log != nil {
 		_ = r.log.Close()
 		r.log = nil

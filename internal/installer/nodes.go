@@ -43,9 +43,16 @@ func (r *Real) manageNodes(ctx context.Context, request services.NodeRequest) (s
 	if err := r.prepareManagement(ctx); err != nil {
 		return result, err
 	}
-	readOnly := request.Action == "nodes-list" || request.Action == "node-status" || request.Action == "node-ssh-settings"
+	readOnly := request.Action == "nodes-list" || request.Action == "node-status" || request.Action == "node-ssh-settings" || request.Action == "node-install-pending" || request.Action == "node-install-load"
 	if !readOnly && (!r.state.Ready || r.state.FirewallPending || r.state.RecoveryBackup != "" || r.state.SubRecovery != "") {
 		return result, errors.New("finish installation or component recovery before modifying nodes")
+	}
+	if strings.HasPrefix(request.Action, "node-install-") {
+		result, err := r.nodeProvision(ctx, request)
+		if err != nil {
+			return result, fmt.Errorf("%w; private log: %s", err, r.LogPath)
+		}
+		return result, nil
 	}
 	if request.Action == "nodes-list" {
 		raw, err := r.nodeAPI(ctx, "GET", "/nodes", nil)

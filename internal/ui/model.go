@@ -78,6 +78,10 @@ type Model struct {
 	nodeTarget                                         services.Node
 	nodeSSH                                            services.NodeSSH
 	nodeSSHChanged                                     bool
+	nodeInstallParams                                  services.NodeInstallParameters
+	nodeInstallJob                                     *services.NodeInstallStatus
+	nodeInstallJobs                                    []services.NodeInstallStatus
+	nodeInstallStage                                   int
 }
 
 func New(ctx context.Context, store config.Store, cfg config.Config, checker updater.Checker, service services.PanelInstaller) Model {
@@ -138,6 +142,17 @@ func (m *Model) back() {
 	m.problem = ""
 	m.scroll = 0
 	switch m.screen {
+	case "nodeInstallInput", "nodeInstallPending", "nodeInstallResult":
+		m.cancelInstall()
+		m.run++
+		m.screen = "menu"
+	case "nodeInstallConfirm":
+		m.screen = "nodesTrust"
+	case "nodeInstallProgress", "nodeInstallVerify":
+		m.cancelInstall()
+		m.run++
+		m.screen = "nodeInstallResult"
+		m.panelResult = m.l("Дальнейшие этапы отменены. Установка сохранена в «Незавершённые установки».\nЕсли firewall ожидает подтверждения, таймер автоматически вернёт прежние правила.", "Further stages cancelled. Resume from Pending installations.\nIf firewall confirmation is pending, its timer restores the previous rules.")
 	case "nodesList":
 		m.cancelInstall()
 		m.run++
@@ -153,8 +168,17 @@ func (m *Model) back() {
 	case "nodesInput", "nodesResult":
 		m.screen = "nodesList"
 	case "nodesTrust":
-		m.prepareNodeSSHInputs()
-		m.screen = "nodesInput"
+		if strings.HasPrefix(m.nodeAction, "node-install-") {
+			if m.nodeInstallJob != nil {
+				m.screen = "nodeInstallPending"
+			} else {
+				m.prepareNodeInstallInputs()
+				m.screen = "nodeInstallInput"
+			}
+		} else {
+			m.prepareNodeSSHInputs()
+			m.screen = "nodesInput"
+		}
 	case "nodesConfirm":
 		if m.nodeAction == "node-ssh" {
 			m.screen = "nodesTrust"
@@ -382,6 +406,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.screen = "notice"
 				}
 			}
+		case "nodeInstallInput", "nodeInstallConfirm", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult":
+			return m.updateNodeInstallScreen(msg)
 		case "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesResult":
 			return m.updateNodeScreen(msg)
 		case "panelInput", "panelConfirm", "panelResult", "panelCustom":
@@ -484,7 +510,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	if m.screen == "email" || m.screen == "domains" || m.screen == "panelInput" || m.screen == "nodesInput" || m.screen == "nodesTrust" {
+	if m.screen == "email" || m.screen == "domains" || m.screen == "panelInput" || m.screen == "nodesInput" || m.screen == "nodesTrust" || m.screen == "nodeInstallInput" {
 		var cmd tea.Cmd
 		m.inputs[m.focus], cmd = m.inputs[m.focus].Update(msg)
 		return m, cmd

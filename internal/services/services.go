@@ -1,7 +1,10 @@
 // Package services defines the boundary between the UI and system operations.
 package services
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type PanelParameters struct {
 	PanelDomain, SubscriptionDomain string
@@ -58,6 +61,25 @@ type NodeSSH struct {
 type NodeRequest struct {
 	Action, UUID, Value, Fingerprint string
 	SSH                              NodeSSH
+	Install                          NodeInstallParameters
+	JobID                            string
+	Stage                            int
+}
+
+type NodeInstallParameters struct {
+	Name, Address, Domain, PanelIP string
+	SSH                            NodeSSH
+}
+
+type NodeInstallStatus struct {
+	ID                     string
+	Params                 NodeInstallParameters
+	Stage                  int
+	Completed              []bool
+	NodeUUID               string
+	Ready, FirewallPending bool
+	LastError              string
+	RollbackAt             time.Time
 }
 
 type NodeResult struct {
@@ -67,6 +89,8 @@ type NodeResult struct {
 	HostKeyChanged bool
 	Text, TextRU   string
 	Command        []string
+	Install        *NodeInstallStatus
+	Jobs           []NodeInstallStatus
 }
 
 type NodeManager interface {

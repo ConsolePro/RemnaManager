@@ -26,6 +26,9 @@ func (m Model) openNodeOperation(selected item) (tea.Model, tea.Cmd) {
 		m.notice = m.l("Деморежим: управление нодами отключено.", "Demo mode: node management is disabled.")
 		return m, nil
 	}
+	if strings.HasPrefix(selected.action, "node-install-") {
+		return m.openNodeInstall(selected)
+	}
 	m.nodeAction = selected.action
 	m.nodeTitle = m.l(selected.ru, selected.en)
 	m.nodeList = nil
@@ -42,23 +45,44 @@ func (m Model) startNodeRequest(request services.NodeRequest) (tea.Model, tea.Cm
 	m.installCtx, m.installCancel = context.WithCancel(m.ctx)
 	m.nodeRequest = request
 	m.screen = "nodesProgress"
+	if request.Action == "node-install-step" {
+		m.screen = "nodeInstallProgress"
+	}
 	m.problem = ""
 	m.scroll = 0
 	run, ctx := m.run, m.installCtx
 	return m, func() tea.Msg {
-		operation, cancel := context.WithTimeout(ctx, 45*time.Second)
+		timeout := 45 * time.Second
+		if request.Action == "node-install-step" {
+			timeout = 20 * time.Minute
+		}
+		if request.Action == "node-install-confirm" {
+			timeout = 90 * time.Second
+		}
+		operation, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		result, err := service.ManageNodes(operation, request)
 		return nodeResultMsg{run, request.Action, result, err}
 	}
 }
 func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
-	if msg.run != m.run || m.screen != "nodesProgress" {
+	if msg.run != m.run || (m.screen != "nodesProgress" && m.screen != "nodeInstallProgress") {
 		return m, nil
 	}
 	m.cancelInstall()
+	if msg.result.Install != nil {
+		m.nodeInstallJob = msg.result.Install
+		m.nodeInstallParams = msg.result.Install.Params
+	}
 	if msg.err != nil {
 		m.screen = "nodesResult"
+		if strings.HasPrefix(m.nodeAction, "node-install-") {
+			m.screen = "nodeInstallResult"
+			if m.nodeInstallJob == nil && m.nodeAction == "node-install-add" {
+				m.prepareNodeInstallInputs()
+				m.screen = "nodeInstallInput"
+			}
+		}
 		m.panelResult = ""
 		m.problem = msg.err.Error()
 		return m, nil
@@ -66,9 +90,17 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 	if len(msg.result.Command) > 0 {
 		cmd := exec.CommandContext(m.ctx, msg.result.Command[0], msg.result.Command[1:]...)
 		run := m.run
+		if msg.action == "node-install-auth" {
+			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+				return nodeResultMsg{run, "node-install-authenticated", services.NodeResult{Install: msg.result.Install}, err}
+			})
+		}
 		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 			return nodeResultMsg{run, "ssh-exited", services.NodeResult{Text: "SSH session ended.", TextRU: "SSH-сессия завершена."}, err}
 		})
+	}
+	if strings.HasPrefix(msg.action, "node-install-") {
+		return m.receiveNodeInstall(msg)
 	}
 	switch msg.action {
 	case "nodes-list":
@@ -201,6 +233,11 @@ func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if key == "enter" {
 			if strings.TrimSpace(m.inputs[0].Value()) != m.nodeFingerprint {
 				m.problem = m.l("Введите полный отпечаток, сверенный через консоль хостинга.", "Enter the full fingerprint verified through your provider's console.")
+				return m, nil
+			}
+			if strings.HasPrefix(m.nodeAction, "node-install-") {
+				m.problem = ""
+				m.screen = "nodeInstallConfirm"
 				return m, nil
 			}
 			m.nodeRequest = services.NodeRequest{Action: "node-ssh-trust", UUID: m.nodeTarget.UUID, SSH: m.nodeSSH, Fingerprint: m.nodeFingerprint}

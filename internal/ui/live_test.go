@@ -84,7 +84,7 @@ func TestLayoutAcrossScreens(t *testing.T) {
 
 func checkLayoutAcrossScreens(t *testing.T) {
 	for _, size := range [][2]int{{36, 18}, {60, 24}, {80, 24}, {80, 30}, {110, 36}, {160, 50}} {
-		for _, screen := range []string{"menu", "language", "email", "domains", "confirm", "progress", "notice", "panelInput", "panelConfirm", "panelProgress", "panelResult", "panelCustom", "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesProgress", "nodesResult"} {
+		for _, screen := range []string{"menu", "language", "email", "domains", "confirm", "progress", "notice", "panelInput", "panelConfirm", "panelProgress", "panelResult", "panelCustom", "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesProgress", "nodesResult", "nodeInstallInput", "nodeInstallConfirm", "nodeInstallProgress", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult"} {
 			m := testModel(t, true)
 			m.inputs = append(m.inputs, newInput("", "")) // Allocate both domain inputs.
 			m.inputs = append(m.inputs, newInput("", ""))
@@ -96,6 +96,12 @@ func checkLayoutAcrossScreens(t *testing.T) {
 			}
 			m.screen = screen
 			m.width, m.height = size[0], size[1]
+			if strings.HasPrefix(screen, "nodeInstall") {
+				m.prepareNodeInstallInputs()
+				job := services.NodeInstallStatus{ID: strings.Repeat("a", 32), Params: services.NodeInstallParameters{Name: "Node-01", Address: "2001:db8:1234:5678::10"}, Completed: make([]bool, 9), FirewallPending: true, RollbackAt: time.Now().Add(time.Minute)}
+				m.nodeInstallJob = &job
+				m.nodeInstallJobs = []services.NodeInstallStatus{job}
+			}
 			m.lastStats = time.Now()
 			m.stats = stats.Snapshot{CPUs: 4, Memory: 4 << 30, Available: 2 << 30, IPv4: "192.0.2.10", IPv6: "Not connected"}
 			view := m.View()

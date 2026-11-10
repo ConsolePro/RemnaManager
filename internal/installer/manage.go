@@ -257,6 +257,31 @@ func (r *Real) backup(ctx context.Context) (string, error) {
 	if err = saveState(statePath(directory), r.state); err != nil {
 		return "", err
 	}
+	jobsDir := filepath.Join(r.Root, "node-jobs")
+	entries, readErr := os.ReadDir(jobsDir)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return "", readErr
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path, checkErr := r.jobPath(strings.TrimSuffix(entry.Name(), ".json"))
+		if checkErr != nil {
+			return "", checkErr
+		}
+		info, e := os.Lstat(path)
+		if e != nil || !info.Mode().IsRegular() {
+			return "", errors.New("cannot back up a non-regular node journal")
+		}
+		data, e := os.ReadFile(path)
+		if e != nil {
+			return "", e
+		}
+		if e = writeFile(filepath.Join(directory, "node-jobs", entry.Name()), data, 0600); e != nil {
+			return "", e
+		}
+	}
 	if err = writeFile(filepath.Join(directory, "COMPLETE"), []byte("PostgreSQL custom-format dump and private configuration\n"), 0600); err != nil {
 		return "", err
 	}

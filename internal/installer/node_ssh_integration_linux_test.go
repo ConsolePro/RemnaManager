@@ -103,4 +103,30 @@ func TestLivePinnedSSHConnection(t *testing.T) {
 	if _, err = runner.Run(ctx, nil, "ssh", args...); err == nil {
 		t.Fatal("OpenSSH accepted a mismatched pinned key on port " + strconv.Itoa(port))
 	}
+	// Authenticate once, then prove batch stages reuse the native master session.
+	j := provisionJob(t)
+	j.Params.SSH = r.state.NodeSSH[testNodeUUID]
+	if err = r.saveNodeJob(&j); err != nil {
+		t.Fatal(err)
+	}
+	auth, err := r.nodeProvision(ctx, services.NodeRequest{Action: "node-install-auth", JobID: j.ID, Fingerprint: prepared.Fingerprint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err = runner.Run(ctx, nil, auth.Command[0], auth.Command[1:]...); err != nil {
+		t.Fatal("native installation authentication failed", err)
+	}
+	if err = os.Rename(settings.IdentityFile, settings.IdentityFile+".held"); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := r.provisionSSHArgs(j, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch = append(batch, "root@"+j.Params.SSH.Host, "printf master-session-verified")
+	data, err = runner.Run(ctx, nil, "ssh", batch...)
+	if err != nil || !strings.HasSuffix(string(data), "master-session-verified") {
+		t.Fatal("batch SSH did not reuse the authenticated connection", err)
+	}
 }
