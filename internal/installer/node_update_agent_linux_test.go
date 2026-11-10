@@ -73,4 +73,46 @@ func checkNodeUpdateAgent(t *testing.T, r *Real, j NodeJob) {
 	if string(committed) != string(after) {
 		t.Fatal("late rollback undid committed update")
 	}
+	// Reinstall a missing container from the same pinned image, including the
+	// explicit force-recreate path that an ordinary same-image update skips.
+	j.Image = "remnawave/node@sha256:" + strings.Repeat("b", 64)
+	j.UpdateReinstall = true
+	for index, fail := range []bool{false, true} {
+		j.UpdateID = strings.Repeat(string(rune('4'+index)), 32)
+		for _, name := range []string{"missing-node", "require-recreate"} {
+			if err := os.WriteFile(fixture+name, []byte("1"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if phase, image, err := r.runNodeUpdateAgent(ctx, j, "prepare"); err != nil || phase != "prepared" || image != j.Image {
+			t.Fatal("reinstall prepare", phase, err)
+		}
+		pulled, err := os.ReadFile(fixture + "last-pull")
+		if err != nil || string(pulled) != j.Image {
+			t.Fatal("reinstall pulled a different version", err)
+		}
+		if fail {
+			if err := os.WriteFile(fixture+"update-fail", []byte("1"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, _, err = r.runNodeUpdateAgent(ctx, j, "apply")
+		if (err != nil) != fail {
+			t.Fatal("reinstall start", err)
+		}
+		action, want := "commit", "committed"
+		if fail {
+			action, want = "rollback", "rolled-back"
+		}
+		if phase, _, err := r.runNodeUpdateAgent(ctx, j, action); err != nil || phase != want {
+			t.Fatal("reinstall finish", phase, err)
+		}
+		after, err = os.ReadFile("/opt/remnanode/compose.json")
+		if err != nil || string(after) != string(committed) {
+			t.Fatal("reinstall changed Compose", err)
+		}
+		if _, err = os.Stat(fixture + "missing-node"); !os.IsNotExist(err) {
+			t.Fatal("container was not recreated")
+		}
+	}
 }

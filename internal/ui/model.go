@@ -168,7 +168,7 @@ func (m *Model) back() {
 	case "nodesInput", "nodesResult":
 		m.screen = "nodesList"
 	case "nodesTrust":
-		if m.nodeAction == "node-update" {
+		if m.nodeAction == "node-update" || m.nodeAction == "node-reinstall" {
 			m.screen = "nodesList"
 			break
 		}
@@ -184,7 +184,7 @@ func (m *Model) back() {
 			m.screen = "nodesInput"
 		}
 	case "nodesConfirm":
-		if m.nodeAction == "node-ssh" || m.nodeAction == "node-update" {
+		if m.nodeAction == "node-ssh" || m.nodeAction == "node-update" || m.nodeAction == "node-reinstall" {
 			m.screen = "nodesTrust"
 		} else if m.nodeAction == "node-rename" {
 			m.screen = "nodesInput"

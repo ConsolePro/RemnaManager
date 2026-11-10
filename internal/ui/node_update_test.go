@@ -17,19 +17,28 @@ func (f *updateNodeFake) ManageNodes(ctx context.Context, req services.NodeReque
 	}
 	f.requests = append(f.requests, req)
 	switch req.Action {
-	case "node-update-prepare":
+	case "node-update-prepare", "node-reinstall-prepare":
 		return services.NodeResult{SSH: services.NodeSSH{Host: "node.example.test", Port: 22}, Fingerprint: "SHA256:verified-update-key", Text: "remnawave/node@sha256:" + strings.Repeat("a", 64)}, nil
-	case "node-update-auth":
+	case "node-update-auth", "node-reinstall-auth":
 		return services.NodeResult{Command: []string{"ssh", "fixture"}}, nil
 	}
 	return services.NodeResult{TextRU: "Обновление завершено"}, nil
 }
 
 func TestNodeUpdateRequiresSelectionTrustAndExplicitConfirmation(t *testing.T) {
+	checkNodeReplacementConfirmation(t, "node-update")
+}
+
+func TestNodeReinstallRequiresSelectionTrustAndExplicitConfirmation(t *testing.T) {
+	checkNodeReplacementConfirmation(t, "node-reinstall")
+}
+
+func checkNodeReplacementConfirmation(t *testing.T, action string) {
+	t.Helper()
 	m := testModel(t, true)
 	f := &updateNodeFake{}
 	m.service = f
-	next, cmd := m.openNodeOperation(operation("Обновить ноду", "Update node", "node-update"))
+	next, cmd := m.openNodeOperation(operation("Операция с нодой", "Node operation", action))
 	m = next.(Model)
 	next, _ = m.Update(cmd())
 	m = next.(Model)
@@ -47,17 +56,17 @@ func TestNodeUpdateRequiresSelectionTrustAndExplicitConfirmation(t *testing.T) {
 	cmd = press(&m, tea.KeyEnter)
 	next, auth := m.Update(cmd())
 	m = next.(Model)
-	if auth == nil || f.requests[2].Action != "node-update-auth" {
+	if auth == nil || f.requests[2].Action != action+"-auth" {
 		t.Fatal("native authentication was not requested")
 	}
-	next, cmd = m.Update(nodeResultMsg{run: m.run, action: "node-update-authenticated"})
+	next, cmd = m.Update(nodeResultMsg{run: m.run, action: action + "-authenticated"})
 	m = next.(Model)
 	if len(f.requests) != 3 || cmd == nil {
 		t.Fatal("update ran outside the managed command")
 	}
 	next, _ = m.Update(cmd())
 	m = next.(Model)
-	if m.screen != "nodesResult" || f.requests[3].Action != "node-update-run" {
+	if m.screen != "nodesResult" || f.requests[3].Action != action+"-run" {
 		t.Fatal("authenticated update did not finish")
 	}
 }

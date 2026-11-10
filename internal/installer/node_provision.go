@@ -38,6 +38,7 @@ type NodeJob struct {
 	RollbackAt                                              time.Time
 	LastError                                               string
 	UpdateID, UpdateTarget                                  string
+	UpdateReinstall                                         bool
 }
 
 func NodeInstallStages() [][2]string {
@@ -130,6 +131,9 @@ func (r *Real) loadNodeJob(id string) (NodeJob, error) {
 	}
 	if j.UpdateID != "" && !regexp.MustCompile(`^[a-f0-9]{32}$`).MatchString(j.UpdateID) || j.UpdateTarget != "" && (!nodeImagePattern.MatchString(j.UpdateTarget) || j.UpdateID == "") {
 		return j, errors.New("invalid node update journal")
+	}
+	if j.UpdateReinstall && j.UpdateID == "" {
+		return j, errors.New("reinstallation mode has no saved transaction")
 	}
 	if j.Ready && (!j.Completed[8] || j.FirewallPending) {
 		return j, errors.New("inconsistent completed installation journal")

@@ -28,20 +28,28 @@ elif name == "docker":
         else:
             print("remnawave/node@sha256:" + ("b" if (state / "update-mode").exists() else "a") * 64)
     elif args[:1] == ["inspect"]:
+        if (state / "missing-node").exists():
+            raise SystemExit(1)
         print("true" if "{{.State.Running}}" in args else (state / "running-image").read_text())
     elif args[:1] == ["compose"]:
         if "ps" in args:
-            print("fixture-node-container")
+            print("" if (state / "missing-node").exists() else "fixture-node-container")
         if "up" in args:
+            if (state / "require-recreate").exists():
+                assert "--force-recreate" in args
             doc = json.loads(pathlib.Path("/opt/remnanode/compose.json").read_text())
             image = doc["services"]["remnanode"]["image"].split("sha256:")[-1]
             if (state / "update-fail").exists() and image == "b" * 64:
+                (state / "update-fail").unlink()
                 raise SystemExit(1)
             (state / "running-image").write_text("sha256:" + image)
+            (state / "missing-node").unlink(missing_ok=True)
         if "config" in args:
             doc = json.loads(pathlib.Path("/opt/remnanode/compose.json").read_text())
             assert doc["services"]["remnanode"]["network_mode"] == "host"
-    elif args[:1] != ["pull"]:
+    elif args[:1] == ["pull"]:
+        (state / "last-pull").write_text(args[-1])
+    else:
         raise SystemExit("Unexpected fixture Docker command")
 elif name == "getent":
     print("192.0.2.10 STREAM cover.fixture.test")

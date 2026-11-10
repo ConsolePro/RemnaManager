@@ -101,7 +101,7 @@ func (r *Real) manageNodes(ctx context.Context, request services.NodeRequest) (s
 		return result, errors.New("unexpected node detail response")
 	}
 	request.UUID = node.UUID
-	if strings.HasPrefix(request.Action, "node-update-") {
+	if strings.HasPrefix(request.Action, "node-update-") || strings.HasPrefix(request.Action, "node-reinstall-") {
 		return r.manageNodeUpdate(ctx, request, node)
 	}
 	switch request.Action {

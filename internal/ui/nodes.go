@@ -56,7 +56,7 @@ func (m Model) startNodeRequest(request services.NodeRequest) (tea.Model, tea.Cm
 		if request.Action == "node-install-step" {
 			timeout = 20 * time.Minute
 		}
-		if request.Action == "node-update-run" {
+		if request.Action == "node-update-run" || request.Action == "node-reinstall-run" {
 			timeout = 10 * time.Minute
 		}
 		if request.Action == "node-install-confirm" {
@@ -101,12 +101,9 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 	if len(msg.result.Command) > 0 {
 		cmd := exec.CommandContext(m.ctx, msg.result.Command[0], msg.result.Command[1:]...)
 		run := m.run
-		if msg.action == "node-install-auth" || msg.action == "node-update-auth" {
+		if msg.action == "node-install-auth" || msg.action == "node-update-auth" || msg.action == "node-reinstall-auth" {
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
-				action := "node-install-authenticated"
-				if msg.action == "node-update-auth" {
-					action = "node-update-authenticated"
-				}
+				action := strings.TrimSuffix(msg.action, "-auth") + "-authenticated"
 				return nodeResultMsg{run, action, services.NodeResult{Install: msg.result.Install}, err}
 			})
 		}
@@ -127,10 +124,10 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 		m.prepareNodeSSHInputs()
 		m.screen = "nodesInput"
 		return m, m.inputs[0].Focus()
-	case "node-update-authenticated":
-		return m.startNodeRequest(services.NodeRequest{Action: "node-update-run", UUID: m.nodeTarget.UUID})
-	case "node-ssh-prepare", "node-update-prepare":
-		if msg.action == "node-update-prepare" {
+	case "node-update-authenticated", "node-reinstall-authenticated":
+		return m.startNodeRequest(services.NodeRequest{Action: strings.TrimSuffix(msg.action, "-authenticated") + "-run", UUID: m.nodeTarget.UUID})
+	case "node-ssh-prepare", "node-update-prepare", "node-reinstall-prepare":
+		if msg.action == "node-update-prepare" || msg.action == "node-reinstall-prepare" {
 			m.panelResult = msg.result.Text
 			if m.cfg.Language != "en" && msg.result.TextRU != "" {
 				m.panelResult = msg.result.TextRU
@@ -207,8 +204,8 @@ func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case "node-ssh":
 				m.nodeRequest.Action = "node-ssh-settings"
 				return m.startNodeRequest(m.nodeRequest)
-			case "node-update":
-				return m.startNodeRequest(services.NodeRequest{Action: "node-update-prepare", UUID: m.nodeTarget.UUID})
+			case "node-update", "node-reinstall":
+				return m.startNodeRequest(services.NodeRequest{Action: m.nodeAction + "-prepare", UUID: m.nodeTarget.UUID})
 			}
 		}
 	case "nodesInput":
@@ -265,8 +262,8 @@ func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.screen = "nodeInstallConfirm"
 				return m, nil
 			}
-			if m.nodeAction == "node-update" {
-				m.nodeRequest = services.NodeRequest{Action: "node-update-auth", UUID: m.nodeTarget.UUID, Fingerprint: m.nodeFingerprint}
+			if m.nodeAction == "node-update" || m.nodeAction == "node-reinstall" {
+				m.nodeRequest = services.NodeRequest{Action: m.nodeAction + "-auth", UUID: m.nodeTarget.UUID, Fingerprint: m.nodeFingerprint}
 				m.problem = ""
 				m.screen = "nodesConfirm"
 				return m, nil
@@ -295,6 +292,9 @@ func (m Model) nodesView() string {
 	title := accent.Render(m.nodeTitle)
 	switch m.screen {
 	case "nodesProgress":
+		if m.nodeAction == "node-reinstall" {
+			return title + "\n\n" + m.l("Пересоздание контейнера ноды…\nСохранённые ключи и версия образа сохраняются.\nПри ошибке будет выполнена попытка отката.\nДля восстановления прерванной операции выберите этот пункт повторно.", "Recreating the node container…\nSaved keys and the pinned image version are retained.\nFailure triggers a rollback attempt.\nSelect this operation again to recover an interrupted attempt.")
+		}
 		if m.nodeAction == "node-update" {
 			return title + "\n\n" + m.l("Проверка и обновление ноды…\nПри прерывании обновления сработает автоматический откат.\nПовторно выберите обновление, чтобы проверить восстановление.", "Checking and updating node…\nAn interrupted update will roll back automatically.\nSelect Update again to check recovery.")
 		}
@@ -357,6 +357,8 @@ func (m Model) nodesView() string {
 			text += m.l("Открыть интерактивный SSH от root:\n", "Open an interactive SSH session as root:\n") + m.nodeSSH.Host + ":" + strconv.Itoa(m.nodeSSH.Port) + "\n" + m.nodeFingerprint
 		case "node-update":
 			text += m.panelResult + "\n\n" + warning.Render(m.l("Будет загружен официальный remnawave/node:latest и закреплён его digest.\nКонтейнер перезапустится; соединения клиентов могут оборваться.\nПри ошибке будет восстановлен прежний Compose и образ.\nПрерванное обновление сначала будет восстановлено без новой установки.", "The official remnawave/node:latest will be pulled and pinned by digest.\nThe container will restart; client connections may be interrupted.\nFailure restores the previous Compose and image.\nAn interrupted update is recovered before attempting another update."))
+		case "node-reinstall":
+			text += m.panelResult + "\n\n" + warning.Render(m.l("Контейнер ноды будет пересоздан из сохранённого образа.\nКлючи, настройки Compose и объекты панели сохраняются.\nСайт, сертификаты и firewall не переустанавливаются.\nСоединения клиентов могут оборваться. При ошибке — попытка отката.\nПрерванная операция сначала будет восстановлена.", "The node container will be recreated from the pinned image.\nKeys, Compose settings and panel resources are retained.\nThe website, certificates and firewall are retained.\nClient connections may drop. Failure triggers a rollback attempt.\nAn interrupted operation is recovered first."))
 		}
 		return text + "\n\n" + m.l("Enter — подтвердить · Esc — назад", "Enter — confirm · Esc — back")
 	case "nodesResult":

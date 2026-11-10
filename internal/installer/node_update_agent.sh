@@ -1,6 +1,6 @@
 set -Eeuo pipefail
 umask 077
-[[ $RM_JOB_ID =~ ^[a-f0-9]{32}$ && $RM_UPDATE_ID =~ ^[a-f0-9]{32}$ ]]
+[[ $RM_JOB_ID =~ ^[a-f0-9]{32}$ && $RM_UPDATE_ID =~ ^[a-f0-9]{32}$ && $RM_REINSTALL =~ ^[01]$ ]]
 root=/var/lib/remnamanager-node
 stack=/opt/remnanode
 dir=$root/updates/$RM_UPDATE_ID
@@ -39,17 +39,28 @@ prepare)
     [[ ! -L $stack/compose.json && -f $stack/compose.json ]]
     [[ $(jq -r '.services.remnanode.image' "$stack/compose.json") == "$RM_PREVIOUS_IMAGE" ]]
     # Only the image changes; every other Compose value is copied verbatim.
-    docker image inspect "$RM_PREVIOUS_IMAGE" >/dev/null
-    verify_running "$RM_PREVIOUS_IMAGE"
-    docker pull remnawave/node:latest
-    image=$(docker image inspect --format '{{index .RepoDigests 0}}' remnawave/node:latest)
-    image=${image#docker.io/}
+    if [[ $RM_REINSTALL == 1 ]]; then
+        # Repair missing/stopped containers using exactly the recorded version.
+        docker pull "$RM_PREVIOUS_IMAGE"
+        image=$RM_PREVIOUS_IMAGE
+    else
+        docker image inspect "$RM_PREVIOUS_IMAGE" >/dev/null
+        verify_running "$RM_PREVIOUS_IMAGE"
+        docker pull remnawave/node:latest
+        image=$(docker image inspect --format '{{index .RepoDigests 0}}' remnawave/node:latest)
+        image=${image#docker.io/}
+    fi
     [[ $image =~ ^remnawave/node@sha256:[a-f0-9]{64}$ ]]
     mkdir -p "$root/updates"; chmod 0700 "$root/updates"
     mkdir -m 0700 "$dir"
     write "$dir/compose.before.json" <"$stack/compose.json"
     printf '%s\n' "$image" | write "$dir/image"
-    jq --arg image "$image" '.services.remnanode.image=$image' "$dir/compose.before.json" | write "$dir/compose.after.json"
+    printf '%s\n' "$RM_REINSTALL" | write "$dir/reinstall"
+    if [[ $RM_REINSTALL == 1 ]]; then
+        write "$dir/compose.after.json" <"$dir/compose.before.json"
+    else
+        jq --arg image "$image" '.services.remnanode.image=$image' "$dir/compose.before.json" | write "$dir/compose.after.json"
+    fi
     docker compose --project-directory "$stack" -f "$dir/compose.after.json" config --quiet
     cat <<'EOF' | write "$dir/rollback.sh"
 #!/bin/bash
@@ -65,7 +76,7 @@ phase=$(cat "$dir/phase")
 [[ $phase == trial ]] || exit 0
 tmp=$(mktemp "$stack/compose.json.rollback.XXXXXXXX")
 cat "$dir/compose.before.json" >"$tmp"; chmod 0600 "$tmp"; mv -f -- "$tmp" "$stack/compose.json"
-docker compose --project-directory "$stack" -f "$stack/compose.json" up -d --wait --wait-timeout 120 remnanode
+docker compose --project-directory "$stack" -f "$stack/compose.json" up -d --force-recreate --wait --wait-timeout 120 remnanode
 printf 'rolled-back\n' >"$dir/phase.tmp"; mv -f "$dir/phase.tmp" "$dir/phase"
 EOF
     echo prepared | write "$dir/phase"
@@ -95,7 +106,11 @@ EOF
     printf '%s\n' "$(( $(date +%s) + 300 ))" | write "$dir/deadline"
     echo trial | write "$dir/phase"
     write "$stack/compose.json" <"$dir/compose.after.json"
-    compose up -d --wait --wait-timeout 120 remnanode
+    if [[ $(cat "$dir/reinstall") == 1 ]]; then
+        compose up -d --force-recreate --wait --wait-timeout 120 remnanode
+    else
+        compose up -d --wait --wait-timeout 120 remnanode
+    fi
     verify_running "$(cat "$dir/image")"
     report
     ;;

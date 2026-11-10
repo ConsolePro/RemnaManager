@@ -56,10 +56,11 @@ func (r *Real) manageNodeUpdate(ctx context.Context, request services.NodeReques
 	if node.Address != j.Params.Address {
 		return result, errors.New("panel node address differs from the saved installation")
 	}
+	reinstall := strings.HasPrefix(request.Action, "node-reinstall-")
 	switch request.Action {
-	case "node-update-prepare":
-		if j.UpdateID == "" && (node.IsDisabled || !node.IsConnected) {
-			return result, errors.New("enable the node and restore its connection before updating")
+	case "node-update-prepare", "node-reinstall-prepare":
+		if j.UpdateID == "" && (node.IsDisabled || !reinstall && !node.IsConnected) {
+			return result, errors.New("enable the node; updates also require an active panel connection")
 		}
 		result, err = r.nodeProvision(ctx, services.NodeRequest{Action: "node-install-rescan", JobID: j.ID})
 		result.Text = j.Image
@@ -68,16 +69,16 @@ func (r *Real) manageNodeUpdate(ctx context.Context, request services.NodeReques
 			result.TextRU = j.Image + "\nТребуется восстановление прерванного обновления."
 		}
 		return result, err
-	case "node-update-auth":
+	case "node-update-auth", "node-reinstall-auth":
 		return r.nodeProvision(ctx, services.NodeRequest{Action: "node-install-auth", JobID: j.ID, Fingerprint: request.Fingerprint})
-	case "node-update-run":
+	case "node-update-run", "node-reinstall-run":
 		if j.UpdateID != "" {
 			err = r.recoverNodeUpdate(ctx, &j)
 		} else {
-			if node.IsDisabled || !node.IsConnected {
-				return result, errors.New("node must be connected and enabled before updating")
+			if node.IsDisabled || !reinstall && !node.IsConnected {
+				return result, errors.New("enable the node; updates also require an active panel connection")
 			}
-			err = r.updateNode(ctx, &j)
+			err = r.replaceNode(ctx, &j, reinstall)
 		}
 		result.Text = "Node operation completed. Current image: " + j.Image
 		result.TextRU = "Операция завершена. Текущий образ: " + j.Image
@@ -103,7 +104,11 @@ func (r *Real) runNodeUpdateAgent(ctx context.Context, j NodeJob, action string)
 		return "", "", err
 	}
 	args = append(args, "root@"+j.Params.SSH.Host, "bash -s")
-	input := fmt.Sprintf("set +x\nRM_JOB_ID='%s'\nRM_UPDATE_ID='%s'\nRM_UPDATE_ACTION='%s'\nRM_PREVIOUS_IMAGE='%s'\n", j.ID, j.UpdateID, action, j.Image)
+	mode := "0"
+	if j.UpdateReinstall {
+		mode = "1"
+	}
+	input := fmt.Sprintf("set +x\nRM_JOB_ID='%s'\nRM_UPDATE_ID='%s'\nRM_UPDATE_ACTION='%s'\nRM_PREVIOUS_IMAGE='%s'\nRM_REINSTALL='%s'\n", j.ID, j.UpdateID, action, j.Image, mode)
 	data, err := r.Runner.Run(ctx, append([]byte(input), nodeUpdateAgent...), "ssh", args...)
 	if err != nil {
 		return "", "", fmt.Errorf("remote node update %s failed; inspect /var/lib/remnamanager-node/install.log: %w", action, err)
@@ -155,15 +160,21 @@ func (r *Real) recoverNodeUpdate(ctx context.Context, j *NodeJob) error {
 		return errors.New("unknown remote update state; recovery journal retained")
 	}
 	j.UpdateID, j.UpdateTarget = "", ""
+	j.UpdateReinstall = false
 	return r.saveNodeJob(j)
 }
 
 func (r *Real) updateNode(ctx context.Context, j *NodeJob) error {
+	return r.replaceNode(ctx, j, false)
+}
+
+func (r *Real) replaceNode(ctx context.Context, j *NodeJob, reinstall bool) error {
 	id, err := secret()
 	if err != nil {
 		return err
 	}
 	j.UpdateID = id[:32]
+	j.UpdateReinstall = reinstall
 	if err = r.saveNodeJob(j); err != nil {
 		return err
 	}
@@ -174,11 +185,14 @@ func (r *Real) updateNode(ctx context.Context, j *NodeJob) error {
 	if phase != "prepared" {
 		return r.failNodeUpdate(j, errors.New("remote update was not prepared"))
 	}
+	if reinstall && image != j.Image {
+		return r.failNodeUpdate(j, errors.New("reinstallation must preserve the pinned image"))
+	}
 	j.UpdateTarget = image
 	if err = r.saveNodeJob(j); err != nil {
 		return r.failNodeUpdate(j, err)
 	}
-	if image == j.Image {
+	if image == j.Image && !reinstall {
 		return r.recoverNodeUpdate(ctx, j)
 	}
 	phase, applied, err := r.runNodeUpdateAgent(ctx, *j, "apply")
@@ -205,6 +219,7 @@ func (r *Real) updateNode(ctx context.Context, j *NodeJob) error {
 		return r.failNodeUpdate(j, err)
 	}
 	j.Image, j.UpdateID, j.UpdateTarget = image, "", ""
+	j.UpdateReinstall = false
 	return r.saveNodeJob(j)
 }
 
