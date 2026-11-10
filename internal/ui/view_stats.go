@@ -54,7 +54,7 @@ func (m Model) classicStatsView() string {
 		{m.l("ЦП", "CPU"), fmt.Sprintf("%.0f%%", s.CPU), []string{cores, model}},
 		{m.l("ОЗУ", "RAM"), ramPercent, []string{m.volumeLine(used, s.Memory), fmt.Sprintf("SWAP: %.1f GB", gb(s.Swap))}},
 		{m.l("Диск", "Disk"), fmt.Sprintf("%.0f%%", s.DiskPercent), []string{m.volumeLine(s.DiskUsed, s.Disk), fmt.Sprintf(m.l("Своб. %.1f GB", "Free %.1f GB"), gb(s.Free))}},
-		{m.l("Сеть", "Network"), "IPv4", []string{v4, v6}},
+		{m.l("Сеть", "Network"), "IPv4 " + v4, []string{v6}},
 	}
 	width := m.contentWidth()
 	if width < 66 || m.height < 24 {
@@ -63,26 +63,35 @@ func (m Model) classicStatsView() string {
 	panelColor := lipgloss.CompleteColor{TrueColor: "#151826", ANSI256: "234", ANSI: "0"}
 	cardColor := lipgloss.CompleteColor{TrueColor: "#1C2633", ANSI256: "235", ANSI: "0"}
 	label := lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Background(cardColor)
-	icon := lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Background(cardColor)
 	value := lipgloss.NewStyle().Foreground(lipgloss.Color("195")).Background(cardColor).Bold(true)
+	network := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(cardColor).Bold(true)
 	detail := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Background(cardColor)
 	primary := detail.Foreground(lipgloss.Color("250"))
-	icons := []string{"⊞", "▤", "▱", "⌘"}
 	available := width - 4 // Outer border and padding.
 	base := (available - 3) / 4
-	widths := []int{base, base, base, available - 3 - base*3}
+	// Reserve enough space for the IPv4 label and address on the same line.
+	networkWidth := min(available-3-3*12, max(base, lipgloss.Width(cards[3].value)+4))
+	base = (available - 3 - networkWidth) / 3
+	widths := []int{base, base, available - 3 - networkWidth - base*2, networkWidth}
 	contents := make([]string, 4)
 	rows := make([][]string, 4)
 	maxRows := 5
 	for i, card := range cards {
 		inner := max(1, widths[i]-4)
-		rows[i] = []string{icon.Render(icons[i]) + " " + label.Render(card.title), "", value.Render(card.value)}
+		valueStyle := value
+		if i == 3 {
+			valueStyle = network
+		}
+		rows[i] = []string{label.Render(card.title), "", valueStyle.Render(card.value)}
 		for j, line := range card.lines {
 			style := detail
 			if j == 0 {
 				style = primary
 			}
-			if i == 0 && j == 1 || i == 3 && j == 1 {
+			if i == 3 {
+				style = network
+			}
+			if i == 0 && j == 1 || i == 3 {
 				wrapped := strings.Split(ansi.Hardwrap(line, inner, true), "\n")
 				if i == 0 && len(wrapped) > 2 {
 					wrapped = wrapped[:2]
@@ -101,9 +110,9 @@ func (m Model) classicStatsView() string {
 		maxRows = max(maxRows, len(rows[i]))
 	}
 	for i := range cards {
-		// Half-cell edges give filled cards soft corners without image protocols.
-		border := lipgloss.Border{Top: "▄", Bottom: "▀", Left: " ", Right: " ", TopLeft: "▗", TopRight: "▖", BottomLeft: "▝", BottomRight: "▘"}
-		contents[i] = lipgloss.NewStyle().Background(cardColor).Border(border).BorderForeground(cardColor).BorderBackground(panelColor).BorderLeftBackground(cardColor).BorderRightBackground(cardColor).Width(widths[i]-2).Height(maxRows).Padding(0, 1).Render(strings.Join(rows[i], "\n"))
+		// Rounded strokes keep the corners smooth without block-shaped pixels.
+		borderColor := lipgloss.CompleteColor{TrueColor: "#354052", ANSI256: "237", ANSI: "8"}
+		contents[i] = lipgloss.NewStyle().Background(cardColor).Border(lipgloss.RoundedBorder()).BorderForeground(borderColor).BorderBackground(panelColor).BorderLeftBackground(cardColor).BorderRightBackground(cardColor).Width(widths[i]-2).Height(maxRows).Padding(0, 1).Render(strings.Join(rows[i], "\n"))
 	}
 	gap := lipgloss.NewStyle().Background(panelColor).Height(maxRows + 2).Render(" ")
 	panel := lipgloss.JoinHorizontal(lipgloss.Top, contents[0], gap, contents[1], gap, contents[2], gap, contents[3])
@@ -123,6 +132,9 @@ func compactStats(cards []serverCard, width int) string {
 			card := cards[group*2+i]
 			title := card.title + " " + card.value
 			detail := card.lines[0]
+			if group*2+i == 3 {
+				title, detail = card.title, card.value
+			}
 			parts = append(parts, lipgloss.NewStyle().Width(cell).Render(accent.Render(ansi.Truncate(title, cell, "…"))+"\n"+muted.Render(ansi.Truncate(detail, cell, "…"))))
 		}
 		rows[group] = lipgloss.JoinHorizontal(lipgloss.Top, parts[0], " │ ", parts[1])
