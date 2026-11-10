@@ -6,14 +6,19 @@ import (
 	"github.com/ConsolePro/RemnaManager/internal/system/network"
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
+	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
 	"runtime"
+	"strings"
 	"time"
 )
 
 type Snapshot struct {
 	CPUs                                int
 	CPU                                 float64
+	CPUModel                            string
+	Uptime                              uint64
+	DiskUsed                            uint64
 	Memory, Available, Swap, Disk, Free uint64
 	DiskPercent                         float64
 	IPv4, IPv6                          string
@@ -27,6 +32,13 @@ func Collect(ctx context.Context) Snapshot {
 	if len(usage) > 0 {
 		s.CPU = usage[0]
 	}
+	info, e := cpu.InfoWithContext(ctx)
+	s.Err = errors.Join(s.Err, e)
+	if len(info) > 0 {
+		s.CPUModel = strings.TrimSpace(info[0].ModelName)
+	}
+	s.Uptime, e = host.UptimeWithContext(ctx)
+	s.Err = errors.Join(s.Err, e)
 	memory, e := mem.VirtualMemoryWithContext(ctx)
 	s.Err = errors.Join(s.Err, e)
 	if memory != nil {
@@ -45,6 +57,7 @@ func Collect(ctx context.Context) Snapshot {
 	s.Err = errors.Join(s.Err, e)
 	if space != nil {
 		s.Disk, s.Free, s.DiskPercent = space.Total, space.Free, space.UsedPercent
+		s.DiskUsed = space.Used
 	}
 	s.IPv4, s.IPv6, e = network.Addresses()
 	s.Err = errors.Join(s.Err, e)

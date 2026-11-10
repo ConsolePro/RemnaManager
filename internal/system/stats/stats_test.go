@@ -23,4 +23,7 @@ func TestRealSnapshot(t *testing.T) {
 	if s.IPv4 == "" || s.IPv6 == "" {
 		t.Fatal(s)
 	}
+	if s.Uptime == 0 || s.DiskUsed > s.Disk {
+		t.Fatal("invalid host uptime or disk usage", s)
+	}
 }
