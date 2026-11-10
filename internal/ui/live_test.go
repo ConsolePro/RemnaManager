@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ConsolePro/RemnaManager/internal/services"
 	"github.com/ConsolePro/RemnaManager/internal/system/stats"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -83,10 +84,16 @@ func TestLayoutAcrossScreens(t *testing.T) {
 
 func checkLayoutAcrossScreens(t *testing.T) {
 	for _, size := range [][2]int{{36, 18}, {60, 24}, {80, 24}, {80, 30}, {110, 36}, {160, 50}} {
-		for _, screen := range []string{"menu", "language", "email", "domains", "confirm", "progress", "notice", "panelInput", "panelConfirm", "panelProgress", "panelResult", "panelCustom"} {
+		for _, screen := range []string{"menu", "language", "email", "domains", "confirm", "progress", "notice", "panelInput", "panelConfirm", "panelProgress", "panelResult", "panelCustom", "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesProgress", "nodesResult"} {
 			m := testModel(t, true)
 			m.inputs = append(m.inputs, newInput("", "")) // Allocate both domain inputs.
 			m.inputs = append(m.inputs, newInput("", ""))
+			if strings.HasPrefix(screen, "nodes") {
+				m.inputs = append(m.inputs, newInput("", ""))
+				m.nodeAction = "node-ssh"
+				m.nodeList = []services.Node{{Name: "Тестовая нода", Address: "2001:db8:1234:5678::10", UUID: "11111111-2222-4333-8444-555555555555"}}
+				m.nodeFingerprint = "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+			}
 			m.screen = screen
 			m.width, m.height = size[0], size[1]
 			m.lastStats = time.Now()

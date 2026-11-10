@@ -54,4 +54,11 @@ func TestRenderPreviewArtifacts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "management.ansi"), []byte(m.View()), 0600); err != nil {
 		t.Fatal(err)
 	}
+	m.screen = "nodesList"
+	m.nodeTitle = "Список нод"
+	m.nodeAction = "nodes-list"
+	m.nodeList = []services.Node{{Name: "Amsterdam-01", Address: "192.0.2.10", IsConnected: true}, {Name: "Frankfurt-02", Address: "198.51.100.20", IsDisabled: true}, {Name: "Helsinki-03", Address: "2001:db8::30"}}
+	if err := os.WriteFile(filepath.Join(dir, "nodes.ansi"), []byte(m.View()), 0600); err != nil {
+		t.Fatal(err)
+	}
 }

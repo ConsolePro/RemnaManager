@@ -23,6 +23,7 @@ import (
 func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
 
 type State struct {
+	NodeSSH                                                              map[string]services.NodeSSH
 	Params                                                               services.PanelParameters
 	BackendTag, SubImage                                                 string
 	SubSource                                                            string

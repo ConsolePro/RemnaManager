@@ -112,6 +112,8 @@ func (m Model) body() string {
 			rows = append(rows, "", accent.Render(m.l("Демонстрация завершена. Enter — в меню.", "Demonstration complete. Enter — return to menu.")))
 		}
 		return strings.Join(rows, "\n")
+	case "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesProgress", "nodesResult":
+		return m.nodesView()
 	case "panelInput", "panelConfirm", "panelProgress", "panelResult", "panelCustom":
 		return m.panelScreenView()
 	case "notice":
@@ -136,7 +138,7 @@ func (m Model) viewportBody() string {
 	if m.problem != "" {
 		body += "\n\n" + failure.Render(m.problem)
 	}
-	if strings.HasPrefix(m.screen, "panel") && m.screen != "panelInput" {
+	if strings.HasPrefix(m.screen, "panel") && m.screen != "panelInput" || strings.HasPrefix(m.screen, "nodes") && m.screen != "nodesList" && m.screen != "nodesInput" {
 		body = ansi.Hardwrap(body, max(1, m.width-6), true)
 	}
 	return body
@@ -173,7 +175,21 @@ func (m Model) View() string {
 		if cursor < vp.YOffset {
 			vp.SetYOffset(cursor)
 		}
-	} else if m.problem != "" && m.screen != "panelResult" {
+	} else if m.screen == "nodesList" {
+		cursor := m.nodeCursor + 2
+		if cursor >= vp.YOffset+vp.Height {
+			vp.SetYOffset(cursor - vp.Height + 1)
+		} else if cursor < vp.YOffset {
+			vp.SetYOffset(cursor)
+		}
+	} else if m.screen == "nodesInput" {
+		cursor := 5 + m.focus*2
+		if cursor >= vp.YOffset+vp.Height {
+			vp.SetYOffset(cursor - vp.Height + 1)
+		} else if cursor < vp.YOffset {
+			vp.SetYOffset(cursor)
+		}
+	} else if m.problem != "" && m.screen != "panelResult" && m.screen != "nodesResult" {
 		vp.GotoBottom()
 	} else if m.screen == "domains" {
 		if m.liveInstall() {
@@ -195,6 +211,16 @@ func (m Model) View() string {
 		hint = m.l("PgUp/PgDn журнал · Enter в меню · Esc назад · F1 выход", "PgUp/PgDn log · Enter menu · Esc back · F1 exit")
 	}
 	switch m.screen {
+	case "nodesList":
+		hint = m.l("↑↓ — нода · Enter — выбрать · R — обновить · Esc — назад", "↑↓ — node · Enter — select · R — refresh · Esc — back")
+	case "nodesInput":
+		hint = m.l("Tab — поле · Enter — далее · Esc — назад", "Tab — field · Enter — next · Esc — back")
+	case "nodesTrust", "nodesConfirm":
+		hint = m.l("Enter — подтвердить · Esc — назад · F1 — выход", "Enter — confirm · Esc — back · F1 — exit")
+	case "nodesProgress":
+		hint = m.l("Esc — отменить запрос · F1 — выход", "Esc — cancel request · F1 — exit")
+	case "nodesResult":
+		hint = m.l("PgUp/PgDn — прокрутка · Enter — список · Esc — назад", "PgUp/PgDn — scroll · Enter — list · Esc — back")
 	case "panelInput":
 		hint = m.l("Enter — продолжить · Esc — назад · F1 — выход", "Enter — continue · Esc — back · F1 — exit")
 	case "panelConfirm":

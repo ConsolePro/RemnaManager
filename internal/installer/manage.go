@@ -25,50 +25,59 @@ func (r *Real) Manage(ctx context.Context, request services.PanelRequest) (servi
 	return r.manage(ctx, request)
 }
 
-func (r *Real) manage(ctx context.Context, request services.PanelRequest) (services.PanelResult, error) {
-	var result services.PanelResult
+func (r *Real) prepareManagement(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
-		return result, err
+		return err
 	}
 	s, err := loadState(statePath(r.Root))
 	if err != nil {
-		return result, err
+		return err
 	}
 	if s.Params.PanelDomain == "" {
-		return result, errors.New("install the panel first; no managed installation state was found")
+		return errors.New("install the panel first; no managed installation state was found")
 	}
 	if err = ValidateParameters(s.Params); err != nil {
-		return result, err
+		return err
 	}
 	marker, err := os.ReadFile(filepath.Join(r.Stack, ".remnamanager-go"))
 	if err != nil || string(marker) != "managed\n" {
-		return result, errors.New("the Compose stack is not owned by RemnaManager; refusing to modify it")
+		return errors.New("the Compose stack is not owned by RemnaManager; refusing to modify it")
 	}
 	if r.lock == nil {
 		r.lock, err = lockFile(filepath.Join(r.Root, "install.lock"))
 		if err != nil {
-			return result, errors.New("another RemnaManager operation is running")
+			return errors.New("another RemnaManager operation is running")
 		}
 	}
 	// Another process may have completed between the initial read and flock.
 	s, err = loadState(statePath(r.Root))
 	if err != nil {
-		return result, err
+		return err
 	}
 	if err = ValidateParameters(s.Params); err != nil {
-		return result, err
+		return err
 	}
 	r.state = s
 	if r.log == nil {
 		r.log, err = os.CreateTemp(r.Root, "management-*.log")
 		if err != nil {
-			return result, err
+			return err
 		}
 		r.LogPath = r.log.Name()
 		if _, ok := r.Runner.(ExecRunner); ok {
 			r.Runner = ExecRunner{Log: r.log}
 		}
 	}
+	return nil
+}
+
+func (r *Real) manage(ctx context.Context, request services.PanelRequest) (services.PanelResult, error) {
+	var result services.PanelResult
+	if err := r.prepareManagement(ctx); err != nil {
+		return result, err
+	}
+	s := r.state
+	var err error
 	readOnly := request.Action == "panel-status" || request.Action == "panel-logs" || request.Action == "panel-credentials" || request.Action == "panel-backup"
 	if !readOnly && (!s.Ready || s.FirewallPending) {
 		return result, errors.New("complete installation and confirm SSH access before managing components")

@@ -38,3 +38,37 @@ type PanelResult struct {
 type PanelManager interface {
 	Manage(context.Context, PanelRequest) (PanelResult, error)
 }
+
+type Node struct {
+	UUID        string `json:"uuid"`
+	Name        string `json:"name"`
+	Address     string `json:"address"`
+	Port        int    `json:"port"`
+	IsConnected bool   `json:"isConnected"`
+	IsDisabled  bool   `json:"isDisabled"`
+}
+
+type NodeSSH struct {
+	Host         string
+	Port         int
+	IdentityFile string
+	HostKey      string
+}
+
+type NodeRequest struct {
+	Action, UUID, Value, Fingerprint string
+	SSH                              NodeSSH
+}
+
+type NodeResult struct {
+	Nodes          []Node
+	SSH            NodeSSH
+	Fingerprint    string
+	HostKeyChanged bool
+	Text, TextRU   string
+	Command        []string
+}
+
+type NodeManager interface {
+	ManageNodes(context.Context, NodeRequest) (NodeResult, error)
+}

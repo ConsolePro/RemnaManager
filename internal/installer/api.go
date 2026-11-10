@@ -14,6 +14,19 @@ import (
 )
 
 func apiCall(ctx context.Context, client *http.Client, base, host, method, path, token string, body any) (map[string]json.RawMessage, error) {
+	raw, err := apiResponse(ctx, client, base, host, method, path, token, body)
+	if err != nil {
+		return nil, err
+	}
+	var data map[string]json.RawMessage
+	if err = json.Unmarshal(raw, &data); err != nil {
+		return nil, errors.New("expected a panel API object response")
+	}
+	return data, nil
+}
+
+// apiResponse supports object, array and empty (202/204) endpoint responses.
+func apiResponse(ctx context.Context, client *http.Client, base, host, method, path, token string, body any) (json.RawMessage, error) {
 	var encoded []byte
 	var err error
 	if body != nil {
@@ -45,16 +58,26 @@ func apiCall(ctx context.Context, client *http.Client, base, host, method, path,
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("panel API %s %s: HTTP %d", method, path, resp.StatusCode)
 	}
-	var data map[string]json.RawMessage
-	if err = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&data); err != nil {
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
+	if err != nil || len(data) > 8<<20 {
+		return nil, errors.New("panel API response is unreadable or too large")
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
+			return nil, nil
+		}
+		return nil, errors.New("empty panel API response")
+	}
+	var envelope struct {
+		Response json.RawMessage `json:"response"`
+	}
+	if err = json.Unmarshal(data, &envelope); err != nil {
 		return nil, errors.New("invalid panel API response")
 	}
-	if wrapped, ok := data["response"]; ok {
-		if err = json.Unmarshal(wrapped, &data); err != nil {
-			return nil, errors.New("invalid panel response envelope")
-		}
+	if envelope.Response == nil {
+		return nil, errors.New("missing panel API response envelope")
 	}
-	return data, nil
+	return envelope.Response, nil
 }
 func responseString(data map[string]json.RawMessage, key string) (string, error) {
 	var s string

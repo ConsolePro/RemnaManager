@@ -71,6 +71,13 @@ type Model struct {
 	panelTitle                                         string
 	panelResult                                        string
 	customChoice                                       int
+	nodeAction, nodeTitle, nodeFingerprint             string
+	nodeRequest                                        services.NodeRequest
+	nodeList                                           []services.Node
+	nodeCursor                                         int
+	nodeTarget                                         services.Node
+	nodeSSH                                            services.NodeSSH
+	nodeSSHChanged                                     bool
 }
 
 func New(ctx context.Context, store config.Store, cfg config.Config, checker updater.Checker, service services.PanelInstaller) Model {
@@ -131,6 +138,32 @@ func (m *Model) back() {
 	m.problem = ""
 	m.scroll = 0
 	switch m.screen {
+	case "nodesList":
+		m.cancelInstall()
+		m.run++
+		m.screen = "menu"
+	case "nodesProgress":
+		m.cancelInstall()
+		m.run++
+		if len(m.nodeList) > 0 {
+			m.screen = "nodesList"
+		} else {
+			m.screen = "menu"
+		}
+	case "nodesInput", "nodesResult":
+		m.screen = "nodesList"
+	case "nodesTrust":
+		m.prepareNodeSSHInputs()
+		m.screen = "nodesInput"
+	case "nodesConfirm":
+		if m.nodeAction == "node-ssh" {
+			m.screen = "nodesTrust"
+		} else if m.nodeAction == "node-rename" {
+			m.screen = "nodesInput"
+			m.inputs[0].Focus()
+		} else {
+			m.screen = "nodesList"
+		}
 	case "panelProgress":
 		m.cancelInstall()
 		m.run++
@@ -185,6 +218,8 @@ func (m *Model) back() {
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case nodeResultMsg:
+		return m.receiveNodeResult(msg)
 	case panelResultMsg:
 		return m.receivePanelResult(msg)
 	case confirmedInstallMsg:
@@ -337,6 +372,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.updateStatus = m.l("Проверка…", "Checking…")
 					return m, m.check()
 				default:
+					if strings.HasPrefix(selected.action, "node") {
+						return m.openNodeOperation(selected)
+					}
 					if strings.HasPrefix(selected.action, "panel-") || strings.HasPrefix(selected.action, "sub-") {
 						return m.openPanelOperation(selected)
 					}
@@ -344,6 +382,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.screen = "notice"
 				}
 			}
+		case "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesResult":
+			return m.updateNodeScreen(msg)
 		case "panelInput", "panelConfirm", "panelResult", "panelCustom":
 			return m.updatePanelScreen(msg)
 		case "language":
@@ -444,7 +484,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	if m.screen == "email" || m.screen == "domains" || m.screen == "panelInput" {
+	if m.screen == "email" || m.screen == "domains" || m.screen == "panelInput" || m.screen == "nodesInput" || m.screen == "nodesTrust" {
 		var cmd tea.Cmd
 		m.inputs[m.focus], cmd = m.inputs[m.focus].Update(msg)
 		return m, cmd
