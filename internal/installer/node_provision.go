@@ -37,6 +37,7 @@ type NodeJob struct {
 	Ready, FirewallPending                                  bool
 	RollbackAt                                              time.Time
 	LastError                                               string
+	UpdateID, UpdateTarget                                  string
 }
 
 func NodeInstallStages() [][2]string {
@@ -126,6 +127,9 @@ func (r *Real) loadNodeJob(id string) (NodeJob, error) {
 	}
 	if j.Image != "" && !regexp.MustCompile(`^remnawave/node@sha256:[a-f0-9]{64}$`).MatchString(j.Image) {
 		return j, errors.New("invalid pinned node image")
+	}
+	if j.UpdateID != "" && !regexp.MustCompile(`^[a-f0-9]{32}$`).MatchString(j.UpdateID) || j.UpdateTarget != "" && (!nodeImagePattern.MatchString(j.UpdateTarget) || j.UpdateID == "") {
+		return j, errors.New("invalid node update journal")
 	}
 	if j.Ready && (!j.Completed[8] || j.FirewallPending) {
 		return j, errors.New("inconsistent completed installation journal")

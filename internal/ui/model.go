@@ -168,6 +168,10 @@ func (m *Model) back() {
 	case "nodesInput", "nodesResult":
 		m.screen = "nodesList"
 	case "nodesTrust":
+		if m.nodeAction == "node-update" {
+			m.screen = "nodesList"
+			break
+		}
 		if strings.HasPrefix(m.nodeAction, "node-install-") {
 			if m.nodeInstallJob != nil {
 				m.screen = "nodeInstallPending"
@@ -180,7 +184,7 @@ func (m *Model) back() {
 			m.screen = "nodesInput"
 		}
 	case "nodesConfirm":
-		if m.nodeAction == "node-ssh" {
+		if m.nodeAction == "node-ssh" || m.nodeAction == "node-update" {
 			m.screen = "nodesTrust"
 		} else if m.nodeAction == "node-rename" {
 			m.screen = "nodesInput"

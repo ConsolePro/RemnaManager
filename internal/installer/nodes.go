@@ -101,6 +101,9 @@ func (r *Real) manageNodes(ctx context.Context, request services.NodeRequest) (s
 		return result, errors.New("unexpected node detail response")
 	}
 	request.UUID = node.UUID
+	if strings.HasPrefix(request.Action, "node-update-") {
+		return r.manageNodeUpdate(ctx, request, node)
+	}
 	switch request.Action {
 	case "node-status":
 		state, stateRU := "offline", "не в сети"

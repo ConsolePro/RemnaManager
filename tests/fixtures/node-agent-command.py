@@ -23,8 +23,21 @@ elif name == "docker":
     if args[:1] == ["version"]:
         print("28.5.0")
     elif args[:2] == ["image", "inspect"]:
-        print("remnawave/node@sha256:" + "a" * 64)
+        if "{{.Id}}" in args:
+            print("sha256:" + args[-1].split("sha256:")[-1])
+        else:
+            print("remnawave/node@sha256:" + ("b" if (state / "update-mode").exists() else "a") * 64)
+    elif args[:1] == ["inspect"]:
+        print("true" if "{{.State.Running}}" in args else (state / "running-image").read_text())
     elif args[:1] == ["compose"]:
+        if "ps" in args:
+            print("fixture-node-container")
+        if "up" in args:
+            doc = json.loads(pathlib.Path("/opt/remnanode/compose.json").read_text())
+            image = doc["services"]["remnanode"]["image"].split("sha256:")[-1]
+            if (state / "update-fail").exists() and image == "b" * 64:
+                raise SystemExit(1)
+            (state / "running-image").write_text("sha256:" + image)
         if "config" in args:
             doc = json.loads(pathlib.Path("/opt/remnanode/compose.json").read_text())
             assert doc["services"]["remnanode"]["network_mode"] == "host"
@@ -41,7 +54,10 @@ elif name == "certbot":
 elif name == "systemd-run":
     # Preserve the independent timer/process model; tests may force early expiry.
     timer.write_text("active")
-    process = subprocess.Popen(["/bin/sh", "-c", "sleep 120; /usr/sbin/nft -f /var/lib/remnamanager-node/firewall-rollback.nft; rm -f /var/lib/remnamanager-node-fixture/timer"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
+    command = "sleep 120; /usr/sbin/nft -f /var/lib/remnamanager-node/firewall-rollback.nft; rm -f /var/lib/remnamanager-node-fixture/timer"
+    if "--on-active=300s" in args:
+        command = "sleep 300; /bin/bash " + args[-1]
+    process = subprocess.Popen(["/bin/sh", "-c", command], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
     (state / "timer.pid").write_text(str(process.pid))
 elif name == "systemctl":
     if args[0] == "is-active":
@@ -68,7 +84,7 @@ elif name == "systemctl":
             subprocess.run(["/usr/sbin/nginx"], check=True)
     elif args[:2] == ["reload", "nginx"]:
         subprocess.run(["/usr/sbin/nginx", "-s", "reload"], check=True)
-    elif args[0] not in ("enable", "daemon-reload", "reset-failed"):
+    elif args[0] not in ("enable", "disable", "daemon-reload", "reset-failed"):
         raise SystemExit("Unexpected fixture systemctl command")
 else:
     raise SystemExit("Unexpected fixture command")

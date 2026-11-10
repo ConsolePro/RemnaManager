@@ -141,4 +141,5 @@ func TestNodeAgentStagesInDisposableContainer(t *testing.T) {
 			t.Fatal("missing agent artifact", path, err)
 		}
 	}
+	checkNodeUpdateAgent(t, r, j)
 }
