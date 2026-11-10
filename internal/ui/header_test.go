@@ -51,14 +51,14 @@ func TestStatsCardsAndLongIPv6(t *testing.T) {
 	m.lastStats = time.Now()
 	m.stats = stats.Snapshot{CPUs: 2, CPU: 10, CPUModel: "Intel Xeon", Memory: 4 << 30, Available: 3 << 30, Swap: 1 << 29, Disk: 32 << 30, DiskUsed: 10 << 30, Free: 21 << 30, DiskPercent: 31, IPv4: "89.144.34.16", IPv6: "2001:db8:1234:5678:9abc:def0:1234:abcd", Uptime: 86401}
 	block := ansi.Strip(m.classicStatsView())
-	for _, want := range []string{"ЦП", "2 ядра", "Intel Xeon", "ОЗУ", "1.0 из 4.0 GB", "SWAP 0.5 GB", "Диск", "IP", "89.144.34.16", "2001:db8", ":abcd"} {
+	for _, want := range []string{"ЦП", "2 ядра", "Intel Xeon", "ОЗУ", "1.0 / 4.0 GB", "SWAP: 0.5 GB", "Диск", "IPv4", "89.144.34.16", "2001:db8", ":abcd"} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("missing %q: %s", want, block)
 		}
 	}
 	inline := false
 	for _, line := range strings.Split(block, "\n") {
-		if strings.Contains(line, "ЦП") && strings.Contains(line, "ОЗУ") && strings.Contains(line, "Диск") && strings.Contains(line, "IP") {
+		if strings.Contains(line, "ЦП") && strings.Contains(line, "ОЗУ") && strings.Contains(line, "Диск") && strings.Contains(line, "Сеть") {
 			inline = true
 		}
 	}
