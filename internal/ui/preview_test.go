@@ -24,7 +24,7 @@ func TestRenderPreviewArtifacts(t *testing.T) {
 	m.height = 36
 	m.frames[0].cursor = 3
 	m.lastStats = time.Now()
-	m.stats = stats.Snapshot{CPUs: 4, CPU: 5, Memory: 4080218931, Available: 2576980377, Swap: 2 << 30, Disk: 115 << 30, Free: 96 << 30, DiskPercent: 17, IPv4: "192.0.2.10", IPv6: "Not connected"}
+	m.stats = stats.Snapshot{CPUs: 2, CPU: 10, CPUModel: "Intel Xeon E5-2680 v4", Uptime: 12*86400 + 3*3600 + 21*60, Memory: 4080218931, Available: 3006477107, Swap: 1 << 29, Disk: 33715493273, DiskUsed: 10522669875, Free: 22011707392, DiskPercent: 31, IPv4: "192.0.2.10", IPv6: "Not connected"}
 	if err := os.WriteFile(filepath.Join(dir, "menu.ansi"), []byte(m.View()), 0600); err != nil {
 		t.Fatal(err)
 	}

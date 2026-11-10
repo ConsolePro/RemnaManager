@@ -2,10 +2,10 @@ package ui
 
 import (
 	"fmt"
-	"github.com/ConsolePro/RemnaManager/internal/updater"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"strings"
+	"time"
 )
 
 var accent = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
@@ -98,15 +98,11 @@ func (m Model) View() string {
 	if m.width < 36 || m.height < 18 {
 		return m.l("Увеличьте терминал до 36×18.\nF1 — выход, Ctrl+C — выход.", "Resize terminal to 36×18.\nF1 — exit, Ctrl+C — exit.") + m.exitView()
 	}
-	version := updater.Version + " · " + m.l("предварительная", "preview")
-	if updater.Newer(m.latest, updater.Version) {
-		version += " · " + m.l("Доступна ", "Available ") + m.latest + " · [" + m.l("Обновить: в разработке", "Update: in development") + "]"
-	}
 	width := m.width - 6
-	logo := accent.Render("REMNA MANAGER")
-	header := logo + strings.Repeat(" ", max(1, width-lipgloss.Width(logo)-lipgloss.Width(version))) + muted.Render(version)
-	if lipgloss.Width(header) > width {
-		header = logo + "\n" + muted.Render(version)
+	header := m.serverHeader(time.Now())
+	top := header + "\n\n" + m.classicStatsView()
+	if m.exitConfirm {
+		top = m.exitView() + "\n\n" + top
 	}
 	body := m.body()
 	if m.problem != "" {
@@ -118,7 +114,8 @@ func (m Model) View() string {
 		lines[i] = ansi.Truncate(line, width, "…")
 	}
 	vp := m.viewport
-	vp.Height = max(1, m.height-strings.Count(header, "\n")-14)
+	vp.Width = width
+	vp.Height = max(1, m.height-lipgloss.Height(top)-5)
 	vp.SetContent(strings.Join(lines, "\n"))
 	if m.screen != "menu" {
 		vp.SetYOffset(m.scroll)
@@ -145,10 +142,7 @@ func (m Model) View() string {
 	if m.screen == "progress" {
 		hint = m.l("PgUp/PgDn журнал · Enter в меню · Esc назад · F1 выход", "PgUp/PgDn log · Enter menu · Esc back · F1 exit")
 	}
-	content := header + "\n\n" + muted.Render(m.classicStatsView()) + "\n\n" + vp.View() + "\n\n" + muted.Render(ansi.Truncate(hint, width, "…"))
-	if m.exitConfirm {
-		content = m.exitView() + "\n\n" + content
-	}
+	content := top + "\n\n" + vp.View() + "\n\n" + muted.Render(ansi.Truncate(hint, width, "…"))
 	lines = strings.Split(content, "\n")
 	for i, line := range lines {
 		lines[i] = ansi.Truncate(line, width, "…")
