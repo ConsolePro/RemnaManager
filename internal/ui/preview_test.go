@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"github.com/ConsolePro/RemnaManager/internal/services"
 	"github.com/ConsolePro/RemnaManager/internal/system/stats"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
@@ -45,6 +46,12 @@ func TestRenderPreviewArtifacts(t *testing.T) {
 		m.logs = append(m.logs, "Демо: "+step[0])
 	}
 	if err := os.WriteFile(filepath.Join(dir, "progress.ansi"), []byte(m.View()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m.screen = "panelConfirm"
+	m.panelTitle = "Обновить панель"
+	m.panelRequest = services.PanelRequest{Action: "panel-update", Value: "3.4.10"}
+	if err := os.WriteFile(filepath.Join(dir, "management.ansi"), []byte(m.View()), 0600); err != nil {
 		t.Fatal(err)
 	}
 }

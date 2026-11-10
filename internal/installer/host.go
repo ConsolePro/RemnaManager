@@ -16,6 +16,23 @@ type Runner interface {
 }
 type ExecRunner struct{ Log io.Writer }
 
+// StreamRunner keeps database dumps out of memory and out of diagnostic logs.
+type StreamRunner interface {
+	RunTo(context.Context, io.Writer, string, ...string) error
+}
+
+func (r ExecRunner) RunTo(ctx context.Context, output io.Writer, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	configureCommand(cmd)
+	cmd.WaitDelay = 5 * time.Second
+	cmd.Stdout = output
+	cmd.Stderr = r.Log
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s failed: %w", name, err)
+	}
+	return nil
+}
+
 func (r ExecRunner) Run(ctx context.Context, input []byte, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	configureCommand(cmd)

@@ -153,6 +153,12 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 		if e != nil {
 			return e
 		}
+		if s.RecoveryBackup != "" {
+			return fmt.Errorf("backend recovery required before resuming installation; backup: %s", s.RecoveryBackup)
+		}
+		if s.SubRecovery != "" {
+			return errors.New("subscription recovery required; run Subscription page → Install / start first")
+		}
 		if s.Params.PanelDomain == "" {
 			s, e = newState(p)
 			if e != nil {
@@ -237,6 +243,9 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 		}
 		if err == nil {
 			_, err = r.compose(ctx, "--profile", "subscription", "up", "-d", "subscription")
+		}
+		if err == nil {
+			err = r.waitSubscription(ctx)
 		}
 	case 6:
 		err = r.configureProxy(ctx)

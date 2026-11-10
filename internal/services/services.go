@@ -23,3 +23,18 @@ type PanelInstaller interface {
 	Stages() [][2]string
 	Step(context.Context, int, PanelParameters) error
 }
+
+type PanelRequest struct {
+	Action, Value string
+}
+
+type PanelResult struct {
+	Text   string
+	TextRU string
+	// Command is an interactive process, launched only after explicit selection.
+	Command []string
+}
+
+type PanelManager interface {
+	Manage(context.Context, PanelRequest) (PanelResult, error)
+}

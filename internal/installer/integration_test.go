@@ -27,6 +27,9 @@ func TestWriteLiveStackFixture(t *testing.T) {
 	if root == "" {
 		t.Skip("opt-in isolated Docker stack")
 	}
+	if _, err := os.Stat(statePath(filepath.Join(root, "manager"))); !os.IsNotExist(err) {
+		t.Fatal("fixture state already exists or is unreadable; use a fresh directory instead of replacing credentials")
+	}
 	p := testParams()
 	p.PanelDomain = "panel.test"
 	p.SubscriptionDomain = "sub.test"

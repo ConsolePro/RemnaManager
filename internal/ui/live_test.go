@@ -83,7 +83,7 @@ func TestLayoutAcrossScreens(t *testing.T) {
 
 func checkLayoutAcrossScreens(t *testing.T) {
 	for _, size := range [][2]int{{36, 18}, {60, 24}, {80, 24}, {80, 30}, {110, 36}, {160, 50}} {
-		for _, screen := range []string{"menu", "language", "email", "domains", "confirm", "progress", "notice"} {
+		for _, screen := range []string{"menu", "language", "email", "domains", "confirm", "progress", "notice", "panelInput", "panelConfirm", "panelProgress", "panelResult", "panelCustom"} {
 			m := testModel(t, true)
 			m.inputs = append(m.inputs, newInput("", "")) // Allocate both domain inputs.
 			m.inputs = append(m.inputs, newInput("", ""))

@@ -6,14 +6,15 @@ type item struct {
 }
 
 func leaf(ru, en string) item                    { return item{ru: ru, en: en, action: "pending"} }
+func operation(ru, en, action string) item       { return item{ru: ru, en: en, action: action} }
 func group(ru, en string, children ...item) item { return item{ru: ru, en: en, children: children} }
 func menu() []item {
 	return []item{
 		group("Панель и компоненты", "Panel and components",
 			item{ru: "Установить панель", en: "Install panel", action: "install"},
-			leaf("Обновить панель", "Update panel"), leaf("Остановить панель", "Stop panel"), leaf("Логи панели", "Panel logs"),
-			group("Remnawave CLI", "Remnawave CLI", leaf("Статус компонентов", "Component status"), leaf("Доступ к панели", "Panel credentials"), leaf("Резервная копия БД", "Database backup"), leaf("Сменить API-токен", "Change API token"), leaf("Запустить панель", "Start panel"), leaf("CLI контейнера", "Container CLI")),
-			group("Страница подписки", "Subscription page", leaf("Установка / запуск", "Install / start"), leaf("Обновление", "Update"), leaf("Кастомизация", "Customize"), leaf("Остановить", "Stop"))),
+			operation("Обновить панель", "Update panel", "panel-update"), operation("Остановить панель", "Stop panel", "panel-stop"), operation("Логи панели", "Panel logs", "panel-logs"),
+			group("Remnawave CLI", "Remnawave CLI", operation("Статус компонентов", "Component status", "panel-status"), operation("Доступ к панели", "Panel credentials", "panel-credentials"), operation("Резервная копия БД", "Database backup", "panel-backup"), operation("Сменить API-токен", "Change API token", "panel-token"), operation("Запустить панель", "Start panel", "panel-start"), operation("CLI контейнера", "Container CLI", "panel-console")),
+			group("Страница подписки", "Subscription page", operation("Установка / запуск", "Install / start", "sub-start"), operation("Обновление", "Update", "sub-update"), operation("Кастомизация", "Customize", "sub-custom"), operation("Остановить", "Stop", "sub-stop"))),
 		group("Ноды и расширения", "Nodes and extensions", leaf("Список нод", "Node list"), leaf("Добавить ноду", "Add node"), leaf("Незавершённые установки", "Pending installations"),
 			group("Управление нодой", "Manage node", leaf("Шаблон selfsteal", "Selfsteal template"), leaf("Обновить ядро Xray", "Update Xray"), leaf("Переименовать", "Rename"), leaf("Переустановить", "Reinstall"), leaf("Обновить ноду", "Update node"), leaf("Запустить / остановить", "Start / stop"), leaf("Перезапустить", "Restart"), leaf("Статус и логи", "Status and logs"), leaf("SSH-подключение", "SSH connection"))),
 		group("WARP-Native", "WARP-Native", leaf("Установить WARP", "Install WARP"), leaf("Удалить WARP", "Remove WARP"), leaf("Добавить маршруты", "Add routes"), leaf("Удалить маршруты", "Remove routes")),

@@ -2,10 +2,12 @@ package installer
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -149,8 +151,8 @@ func (r *Real) waitAPI(ctx context.Context) error {
 func (r *Real) waitHTTPS(ctx context.Context) error {
 	wait, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	targets := []string{"https://" + r.state.Params.PanelDomain + "/api/auth/status", "https://" + r.state.Params.SubscriptionDomain + "/"}
-	for i, target := range targets {
+	targets := []string{"https://" + r.state.Params.PanelDomain + "/api/auth/status"}
+	for _, target := range targets {
 		for {
 			req, e := http.NewRequestWithContext(wait, "GET", target, nil)
 			if e != nil {
@@ -159,7 +161,7 @@ func (r *Real) waitHTTPS(ctx context.Context) error {
 			resp, e := r.Client.Do(req)
 			if e == nil {
 				_ = resp.Body.Close()
-				if resp.StatusCode >= 200 && (resp.StatusCode < 400 || i == 1 && resp.StatusCode == 404) {
+				if resp.StatusCode >= 200 && resp.StatusCode < 400 {
 					break
 				}
 			}
@@ -170,5 +172,19 @@ func (r *Real) waitHTTPS(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
+	// A bare subscription URL intentionally closes its socket. Check its public
+	// certificate without a real user's shortUuid or relaxed TLS verification.
+	for {
+		dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: 10 * time.Second}, Config: &tls.Config{MinVersion: tls.VersionTLS12}}
+		conn, err := dialer.DialContext(wait, "tcp", net.JoinHostPort(r.state.Params.SubscriptionDomain, "443"))
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		select {
+		case <-wait.Done():
+			return errors.New("subscription public TLS verification timed out")
+		case <-time.After(2 * time.Second):
+		}
+	}
 }

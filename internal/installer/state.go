@@ -25,6 +25,7 @@ func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
 type State struct {
 	Params                                                               services.PanelParameters
 	BackendTag, SubImage                                                 string
+	SubSource                                                            string
 	DBPassword, AppSecret, MetricsPassword, WebhookSecret, AdminPassword string
 	ManagerToken, SubToken                                               string
 	Completed                                                            map[int]bool
@@ -32,6 +33,9 @@ type State struct {
 	FirewallOwned                                                        bool
 	RollbackAt                                                           time.Time
 	Ready                                                                bool
+	// An interrupted backend update may already have migrated the database.
+	RecoveryBackup string
+	SubRecovery    string
 }
 
 func secret() (string, error) {

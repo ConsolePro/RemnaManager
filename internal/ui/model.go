@@ -67,6 +67,10 @@ type Model struct {
 	proxyChoice                                        int
 	installCtx                                         context.Context
 	installCancel                                      context.CancelFunc
+	panelRequest                                       services.PanelRequest
+	panelTitle                                         string
+	panelResult                                        string
+	customChoice                                       int
 }
 
 func New(ctx context.Context, store config.Store, cfg config.Config, checker updater.Checker, service services.PanelInstaller) Model {
@@ -127,6 +131,20 @@ func (m *Model) back() {
 	m.problem = ""
 	m.scroll = 0
 	switch m.screen {
+	case "panelProgress":
+		m.cancelInstall()
+		m.run++
+		m.screen = "notice"
+		m.notice = m.l("Операция отменяется. Выполненные изменения сохраняются; проверьте статус и приватный журнал.", "Operation is being cancelled. Completed changes remain; inspect status and the private log.")
+	case "panelConfirm":
+		if m.panelRequest.Action == "sub-image" && m.customChoice == 0 {
+			m.screen = "panelCustom"
+		} else if len(m.inputs) > 0 && (m.panelRequest.Action == "panel-token" || m.panelRequest.Action == "panel-update" || m.panelRequest.Action == "sub-image") {
+			m.screen = "panelInput"
+			m.inputs[0].Focus()
+		} else {
+			m.screen = "menu"
+		}
 	case "menu":
 		if len(m.frames) > 1 {
 			m.frames = m.frames[:len(m.frames)-1]
@@ -167,6 +185,8 @@ func (m *Model) back() {
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case panelResultMsg:
+		return m.receivePanelResult(msg)
 	case confirmedInstallMsg:
 		m.saving = false
 		if msg.err != nil {
@@ -276,7 +296,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.screen != "menu" && m.screen != "email" && m.screen != "domains" {
 			if key == "pgdown" {
-				m.scroll = min(m.scroll+3, max(0, strings.Count(m.body(), "\n")-2))
+				m.scroll = min(m.scroll+3, max(0, strings.Count(m.viewportBody(), "\n")-2))
 				return m, nil
 			}
 			if key == "pgup" {
@@ -317,10 +337,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.updateStatus = m.l("Проверка…", "Checking…")
 					return m, m.check()
 				default:
+					if strings.HasPrefix(selected.action, "panel-") || strings.HasPrefix(selected.action, "sub-") {
+						return m.openPanelOperation(selected)
+					}
 					m.notice = m.l(selected.ru, selected.en) + "\n\n" + m.l("В разработке. Операция пока не реализована.", "In development. This operation is not implemented yet.")
 					m.screen = "notice"
 				}
 			}
+		case "panelInput", "panelConfirm", "panelResult", "panelCustom":
+			return m.updatePanelScreen(msg)
 		case "language":
 			switch key {
 			case "up", "down", "left", "right", "tab", "shift+tab":
@@ -419,7 +444,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	if m.screen == "email" || m.screen == "domains" {
+	if m.screen == "email" || m.screen == "domains" || m.screen == "panelInput" {
 		var cmd tea.Cmd
 		m.inputs[m.focus], cmd = m.inputs[m.focus].Update(msg)
 		return m, cmd

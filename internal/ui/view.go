@@ -112,6 +112,8 @@ func (m Model) body() string {
 			rows = append(rows, "", accent.Render(m.l("Демонстрация завершена. Enter — в меню.", "Demonstration complete. Enter — return to menu.")))
 		}
 		return strings.Join(rows, "\n")
+	case "panelInput", "panelConfirm", "panelProgress", "panelResult", "panelCustom":
+		return m.panelScreenView()
 	case "notice":
 		return m.notice + "\n\n" + m.l("Enter / Esc — в меню", "Enter / Esc — return to menu")
 	case "installOptions":
@@ -129,6 +131,17 @@ func (m Model) body() string {
 	return ""
 }
 
+func (m Model) viewportBody() string {
+	body := m.body()
+	if m.problem != "" {
+		body += "\n\n" + failure.Render(m.problem)
+	}
+	if strings.HasPrefix(m.screen, "panel") && m.screen != "panelInput" {
+		body = ansi.Hardwrap(body, max(1, m.width-6), true)
+	}
+	return body
+}
+
 func (m Model) View() string {
 	if m.width < 36 || m.height < 18 {
 		return m.l("Увеличьте терминал до 36×18.\nF1 — выход, Ctrl+C — выход.", "Resize terminal to 36×18.\nF1 — exit, Ctrl+C — exit.") + m.exitView()
@@ -139,10 +152,7 @@ func (m Model) View() string {
 	if m.exitConfirm {
 		top = m.exitView() + "\n\n" + top
 	}
-	body := m.body()
-	if m.problem != "" {
-		body += "\n\n" + failure.Render(m.problem)
-	}
+	body := m.viewportBody()
 	// Crop long lines before viewport rendering; never split UTF-8 or ANSI sequences.
 	lines := strings.Split(body, "\n")
 	for i, line := range lines {
@@ -163,7 +173,7 @@ func (m Model) View() string {
 		if cursor < vp.YOffset {
 			vp.SetYOffset(cursor)
 		}
-	} else if m.problem != "" {
+	} else if m.problem != "" && m.screen != "panelResult" {
 		vp.GotoBottom()
 	} else if m.screen == "domains" {
 		if m.liveInstall() {
@@ -183,6 +193,18 @@ func (m Model) View() string {
 	}
 	if m.screen == "progress" {
 		hint = m.l("PgUp/PgDn журнал · Enter в меню · Esc назад · F1 выход", "PgUp/PgDn log · Enter menu · Esc back · F1 exit")
+	}
+	switch m.screen {
+	case "panelInput":
+		hint = m.l("Enter — продолжить · Esc — назад · F1 — выход", "Enter — continue · Esc — back · F1 — exit")
+	case "panelConfirm":
+		hint = m.l("Enter — выполнить · Esc — отменить · F1 — выход", "Enter — execute · Esc — cancel · F1 — exit")
+	case "panelProgress":
+		hint = m.l("Esc — отменить операцию · F1 — выход", "Esc — cancel operation · F1 — exit")
+	case "panelResult":
+		hint = m.l("PgUp/PgDn — прокрутка · Enter / Esc — в меню", "PgUp/PgDn — scroll · Enter / Esc — menu")
+	case "panelCustom":
+		hint = m.l("↑↓ — вариант · Enter — выбрать · Esc — назад", "↑↓ — option · Enter — select · Esc — back")
 	}
 	content := top + "\n\n" + vp.View() + "\n\n" + muted.Render(ansi.Truncate(hint, width, "…"))
 	lines = strings.Split(content, "\n")
