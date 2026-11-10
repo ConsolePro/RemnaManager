@@ -237,3 +237,61 @@ func TestNodeAgentPayloadHasNoSecretsInArguments(t *testing.T) {
 		}
 	}
 }
+
+func TestPanelIPDetectionAndConfirmation(t *testing.T) {
+	for _, tc := range []struct{ data, want string }{
+		{"banner\nRM_SSH_CONNECTION=192.0.2.20 54321 198.51.100.10 22\n", "192.0.2.20"},
+		{"RM_SSH_CONNECTION=2001:db8::20 54321 2001:db8::10 22\n", "2001:db8::20"},
+		{"RM_SSH_CONNECTION=::ffff:192.0.2.20 54321 198.51.100.10 22\n", "192.0.2.20"},
+		{"RM_SSH_CONNECTION=10.0.0.2 54321 10.0.0.3 22\n", "10.0.0.2"},
+		{"RM_SSH_CONNECTION=127.0.0.1 54321 127.0.0.1 22\n", ""},
+		{"RM_SSH_CONNECTION=fe80::1 54321 fe80::2 22\n", ""},
+		{"RM_SSH_CONNECTION=garbage\n", ""},
+		{"RM_SSH_CONNECTION=192.0.2.20 1 192.0.2.10 22\nRM_SSH_CONNECTION=192.0.2.21 1 192.0.2.10 22\n", ""},
+		{"", ""},
+	} {
+		got, err := panelIPFromSSH([]byte(tc.data))
+		if got != tc.want || (err != nil) != (tc.want == "") {
+			t.Fatalf("parse %q: got %q, error %v", tc.data, got, err)
+		}
+	}
+	r, f := managementFixture(t)
+	j := provisionJob(t)
+	j.Params.PanelIP = ""
+	if err := r.saveNodeJob(&j); err != nil {
+		t.Fatal(err)
+	}
+	f.response = func(call string, in []byte) ([]byte, error) {
+		if !strings.Contains(call, "BatchMode=yes") || !strings.Contains(string(in), "$SSH_CONNECTION") {
+			t.Fatal("detection did not use the pinned SSH session")
+		}
+		return []byte("RM_SSH_CONNECTION=192.0.2.20 12345 198.51.100.10 22\n"), nil
+	}
+	result, err := r.nodeProvision(context.Background(), services.NodeRequest{Action: "node-install-detect-panel-ip", JobID: j.ID})
+	if err != nil || result.Text != "192.0.2.20" {
+		t.Fatal(result.Text, err)
+	}
+	saved, err := r.loadNodeJob(j.ID)
+	if err != nil || saved.Params.PanelIP != "" {
+		t.Fatal("detection must not persist an unconfirmed address", err)
+	}
+	if err := r.runNodeStage(context.Background(), &saved, 0); err == nil {
+		t.Fatal("installation started without a confirmed address")
+	}
+	request := services.NodeRequest{Action: "node-install-panel-ip", JobID: j.ID, Install: services.NodeInstallParameters{PanelIP: "192.0.2.21"}}
+	result, err = r.nodeProvision(context.Background(), request)
+	if err != nil || result.Install.Params.PanelIP != "192.0.2.21" {
+		t.Fatal("manual correction was not saved", err)
+	}
+	saved, err = r.loadNodeJob(j.ID)
+	if err != nil || saved.RealityKey != j.RealityKey {
+		t.Fatal("address confirmation changed saved keys", err)
+	}
+	saved.Completed[0] = true
+	if err := r.saveNodeJob(&saved); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.nodeProvision(context.Background(), request); err == nil {
+		t.Fatal("changed firewall source after installation started")
+	}
+}

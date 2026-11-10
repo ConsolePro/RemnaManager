@@ -148,7 +148,7 @@ func (m *Model) back() {
 		m.screen = "menu"
 	case "nodeInstallConfirm":
 		m.screen = "nodesTrust"
-	case "nodeInstallProgress", "nodeInstallVerify":
+	case "nodeInstallProgress", "nodeInstallVerify", "nodeInstallPanelIP":
 		m.cancelInstall()
 		m.run++
 		m.screen = "nodeInstallResult"
@@ -406,7 +406,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.screen = "notice"
 				}
 			}
-		case "nodeInstallInput", "nodeInstallConfirm", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult":
+		case "nodeInstallInput", "nodeInstallConfirm", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult", "nodeInstallPanelIP":
 			return m.updateNodeInstallScreen(msg)
 		case "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesResult":
 			return m.updateNodeScreen(msg)
@@ -510,7 +510,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	if m.screen == "email" || m.screen == "domains" || m.screen == "panelInput" || m.screen == "nodesInput" || m.screen == "nodesTrust" || m.screen == "nodeInstallInput" {
+	if m.screen == "email" || m.screen == "domains" || m.screen == "panelInput" || m.screen == "nodesInput" || m.screen == "nodesTrust" || m.screen == "nodeInstallInput" || m.screen == "nodeInstallPanelIP" {
 		var cmd tea.Cmd
 		m.inputs[m.focus], cmd = m.inputs[m.focus].Update(msg)
 		return m, cmd

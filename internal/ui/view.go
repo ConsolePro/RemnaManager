@@ -15,7 +15,7 @@ var failure = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 
 func (m Model) body() string {
 	switch m.screen {
-	case "nodeInstallInput", "nodeInstallConfirm", "nodeInstallProgress", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult":
+	case "nodeInstallInput", "nodeInstallConfirm", "nodeInstallProgress", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult", "nodeInstallPanelIP":
 		return m.nodeInstallView()
 	case "menu":
 		f := m.frames[len(m.frames)-1]
@@ -184,6 +184,12 @@ func (m Model) View() string {
 		} else if cursor < vp.YOffset {
 			vp.SetYOffset(cursor)
 		}
+	} else if m.screen == "nodeInstallPanelIP" {
+		if 4 >= vp.YOffset+vp.Height {
+			vp.SetYOffset(5 - vp.Height)
+		} else if 4 < vp.YOffset {
+			vp.SetYOffset(4)
+		}
 	} else if m.screen == "nodeInstallInput" {
 		cursor := 3 + m.focus*2
 		if cursor >= vp.YOffset+vp.Height {
@@ -224,7 +230,7 @@ func (m Model) View() string {
 		hint = m.l("Tab — поле · Enter — далее · Esc — назад", "Tab — field · Enter — next · Esc — back")
 	case "nodeInstallPending":
 		hint = m.l("↑↓ — установка · Enter — продолжить · R — обновить · Esc — назад", "↑↓ — installation · Enter — resume · R — refresh · Esc — back")
-	case "nodeInstallConfirm", "nodeInstallVerify":
+	case "nodeInstallConfirm", "nodeInstallVerify", "nodeInstallPanelIP":
 		hint = m.l("Enter — подтвердить · Esc — отменить · F1 — выход", "Enter — confirm · Esc — cancel · F1 — exit")
 	case "nodeInstallProgress":
 		hint = m.l("PgUp/PgDn — этапы · Esc — отменить дальнейшие действия", "PgUp/PgDn — stages · Esc — cancel further actions")

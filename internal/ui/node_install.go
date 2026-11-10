@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -33,7 +34,7 @@ func (m Model) openNodeInstall(selected item) (tea.Model, tea.Cmd) {
 }
 func (m *Model) prepareNodeInstallInputs() {
 	p := m.nodeInstallParams
-	m.inputs = []textinput.Model{newInput("Node-01", p.Name), newInput("node.example.com", p.Address), newInput("22", strconv.Itoa(p.SSH.Port)), newInput("cover.example.com", p.Domain), newInput(m.l("IP панели, видимый с ноды", "Panel IP reachable from the node"), p.PanelIP), newInput(m.l("Пусто — SSH agent / стандартный ключ / пароль", "Empty — SSH agent / default key / password"), p.SSH.IdentityFile)}
+	m.inputs = []textinput.Model{newInput("Node-01", p.Name), newInput("node.example.com", p.Address), newInput("22", strconv.Itoa(p.SSH.Port)), newInput("cover.example.com", p.Domain), newInput(m.l("Пусто — определить автоматически по SSH", "Empty — detect automatically over SSH"), p.PanelIP), newInput(m.l("Пусто — SSH agent / стандартный ключ / пароль", "Empty — SSH agent / default key / password"), p.SSH.IdentityFile)}
 	for i := range m.inputs {
 		m.inputs[i].Width = max(1, min(60, m.width-12))
 	}
@@ -61,8 +62,14 @@ func (m Model) receiveNodeInstall(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 	case "node-install-create":
 		return m.startNodeRequest(services.NodeRequest{Action: "node-install-auth", JobID: m.nodeInstallJob.ID, Fingerprint: m.nodeFingerprint})
 	case "node-install-authenticated":
-		m.nodeInstallStage = 0
-		return m.startNodeRequest(services.NodeRequest{Action: "node-install-step", JobID: m.nodeInstallJob.ID, Stage: 0})
+		if m.nodeInstallParams.PanelIP == "" {
+			return m.startNodeRequest(services.NodeRequest{Action: "node-install-detect-panel-ip", JobID: m.nodeInstallJob.ID})
+		}
+		return m.startNodeInstallStages()
+	case "node-install-detect-panel-ip":
+		return m.showNodePanelIP(msg.result.Text)
+	case "node-install-panel-ip":
+		return m.startNodeInstallStages()
 	case "node-install-step":
 		if m.nodeInstallStage < 7 {
 			m.nodeInstallStage++
@@ -75,9 +82,33 @@ func (m Model) receiveNodeInstall(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+func (m Model) startNodeInstallStages() (tea.Model, tea.Cmd) {
+	m.nodeInstallStage = 0
+	return m.startNodeRequest(services.NodeRequest{Action: "node-install-step", JobID: m.nodeInstallJob.ID, Stage: 0})
+}
+func (m Model) showNodePanelIP(value string) (tea.Model, tea.Cmd) {
+	m.screen = "nodeInstallPanelIP"
+	m.inputs = []textinput.Model{newInput(m.l("IP панели, видимый с ноды", "Panel IP reachable from the node"), value)}
+	m.inputs[0].Width = max(1, min(60, m.width-12))
+	m.focus = 0
+	return m, m.inputs[0].Focus()
+}
 func (m Model) updateNodeInstallScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	switch m.screen {
+	case "nodeInstallPanelIP":
+		if key == "enter" {
+			value := strings.TrimSpace(m.inputs[0].Value())
+			ip := net.ParseIP(value)
+			if ip == nil || !ip.IsGlobalUnicast() {
+				m.problem = m.l("Укажите IP панели, доступный с ноды.", "Enter the panel IP reachable from the node.")
+				return m, nil
+			}
+			return m.startNodeRequest(services.NodeRequest{Action: "node-install-panel-ip", JobID: m.nodeInstallJob.ID, Install: services.NodeInstallParameters{PanelIP: value}})
+		}
+		var cmd tea.Cmd
+		m.inputs[0], cmd = m.inputs[0].Update(msg)
+		return m, cmd
 	case "nodeInstallInput":
 		if key == "tab" || key == "shift+tab" || key == "up" || key == "down" {
 			m.inputs[m.focus].Blur()
@@ -157,8 +188,10 @@ func (m Model) updateNodeInstallScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) nodeInstallView() string {
 	title := accent.Render(m.nodeTitle)
 	switch m.screen {
+	case "nodeInstallPanelIP":
+		return title + "\n\n" + m.l("Адрес панели для firewall ноды", "Panel address for the node firewall") + "\n\n" + m.inputs[0].View() + "\n\n" + m.l("Адрес определён со стороны ноды по SSH-соединению.\nПроверьте его: подключения backend могут использовать другой адрес.\nПри необходимости исправьте IP и нажмите Enter.\nЕсли адрес не определён, введите его вручную.\nУстановка на ноде ещё не началась.", "The address is detected by the node from the SSH connection.\nCheck it: backend connections may use a different address.\nEdit the IP if needed and press Enter.\nIf detection failed, enter the address manually.\nInstallation on the node has not started yet.")
 	case "nodeInstallInput":
-		labels := [][2]string{{"Имя ноды", "Node name"}, {"Публичный IP / домен ноды и SSH", "Node public IP / DNS and SSH"}, {"SSH-порт", "SSH port"}, {"Домен selfsteal (DNS на эту ноду)", "Selfsteal domain (DNS points to node)"}, {"IP панели для доступа к API ноды", "Panel IP allowed to access node API"}, {"Приватный SSH-ключ (необязательно)", "Private SSH key (optional)"}}
+		labels := [][2]string{{"Имя ноды", "Node name"}, {"Публичный IP / домен ноды и SSH", "Node public IP / DNS and SSH"}, {"SSH-порт", "SSH port"}, {"Домен selfsteal (DNS на эту ноду)", "Selfsteal domain (DNS points to node)"}, {"IP панели (необязательно, автоопределение)", "Panel IP (optional, automatic detection)"}, {"Приватный SSH-ключ (необязательно)", "Private SSH key (optional)"}}
 		rows := []string{title, ""}
 		for i, label := range labels {
 			rows = append(rows, m.l(label[0], label[1]), m.inputs[i].View())
@@ -167,6 +200,9 @@ func (m Model) nodeInstallView() string {
 		return strings.Join(rows, "\n")
 	case "nodeInstallConfirm":
 		p := m.nodeInstallParams
+		if p.PanelIP == "" {
+			p.PanelIP = m.l("автоматически после входа по SSH", "automatic after SSH authentication")
+		}
 		text := title + fmt.Sprintf("\n\n%s\n%s · SSH %d\nSelfsteal: %s\nPanel IP: %s\n\n", p.Name, p.Address, p.SSH.Port, p.Domain, p.PanelIP)
 		if m.nodeInstallJob != nil {
 			text += m.l("Продолжение установки: ", "Resume installation: ") + m.nodeInstallJob.ID + "\n\n"

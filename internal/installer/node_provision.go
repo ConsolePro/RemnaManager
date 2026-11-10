@@ -72,7 +72,7 @@ func ValidateNodeInstall(p services.NodeInstallParameters) error {
 	if !ValidDomain(p.Domain) || net.ParseIP(p.Domain) != nil {
 		return errors.New("selfsteal requires a DNS domain")
 	}
-	if ip := net.ParseIP(p.PanelIP); ip == nil || !ip.IsGlobalUnicast() {
+	if ip := net.ParseIP(p.PanelIP); p.PanelIP != "" && (ip == nil || !ip.IsGlobalUnicast()) {
 		return errors.New("specify the panel's reachable unicast IP for the node API firewall")
 	}
 	return nil
@@ -132,6 +132,9 @@ func (r *Real) loadNodeJob(id string) (NodeJob, error) {
 	}
 	if j.Completed[2] && (j.Secret == "" || j.Image == "") {
 		return j, errors.New("completed key/image stage has lost its secrets or pinned image")
+	}
+	if j.Completed[0] && j.Params.PanelIP == "" {
+		return j, errors.New("started installation has lost its confirmed panel IP")
 	}
 	if err = ValidateNodeInstall(j.Params); err != nil {
 		return j, err
@@ -196,7 +199,9 @@ func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) 
 		if err := ValidateNodeInstall(p); err != nil {
 			return result, err
 		}
-		p.PanelIP = net.ParseIP(p.PanelIP).String()
+		if p.PanelIP != "" {
+			p.PanelIP = net.ParseIP(p.PanelIP).String()
+		}
 		if ip := net.ParseIP(p.Address); ip != nil {
 			p.Address = ip.String()
 		}
@@ -260,6 +265,33 @@ func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) 
 	result.Install = &status
 	switch request.Action {
 	case "node-install-load":
+		return result, nil
+	case "node-install-detect-panel-ip":
+		args, e := r.provisionSSHArgs(j, true)
+		if e != nil {
+			return result, e
+		}
+		args = append(args, "root@"+j.Params.SSH.Host, "bash -s")
+		data, e := r.Runner.Run(ctx, []byte("printf 'RM_SSH_CONNECTION=%s\\n' \"$SSH_CONNECTION\"\n"), "ssh", args...)
+		if e != nil {
+			return result, errors.New("could not determine the panel IP over SSH; enter it manually")
+		}
+		result.Text, e = panelIPFromSSH(data)
+		return result, e
+	case "node-install-panel-ip":
+		if len(j.Completed) != 0 {
+			return result, errors.New("cannot change the panel IP after installation stages have started")
+		}
+		ip := net.ParseIP(request.Install.PanelIP)
+		if ip == nil || !ip.IsGlobalUnicast() {
+			return result, errors.New("enter a reachable unicast panel IP")
+		}
+		j.Params.PanelIP = ip.String()
+		if e := r.saveNodeJob(&j); e != nil {
+			return result, e
+		}
+		status = jobStatus(j)
+		result.Install = &status
 		return result, nil
 	case "node-install-auth":
 		key, fingerprint, e := r.scanNodeSSH(ctx, j.Params.SSH)
@@ -409,6 +441,9 @@ func RenderNodeStack(j NodeJob) ([]byte, error) {
 	return json.MarshalIndent(map[string]any{"name": "remnamanager-node", "services": map[string]any{"remnanode": map[string]any{"image": image, "restart": "unless-stopped", "network_mode": "host", "environment": map[string]string{"NODE_PORT": "2222", "SECRET_KEY": j.Secret}, "logging": map[string]any{"driver": "json-file", "options": map[string]string{"max-size": "10m", "max-file": "3"}}}}}, "", "  ")
 }
 func (r *Real) runNodeStage(ctx context.Context, j *NodeJob, stage int) error {
+	if ip := net.ParseIP(j.Params.PanelIP); ip == nil || !ip.IsGlobalUnicast() {
+		return errors.New("confirm the panel IP before starting installation")
+	}
 	if stage < 0 || stage > 7 {
 		return errors.New("invalid remote installation stage; firewall confirmation is separate")
 	}
@@ -496,6 +531,30 @@ func (r *Real) runNodeStage(ctx context.Context, j *NodeJob, stage int) error {
 		j.RollbackAt = time.Time{}
 	}
 	return nil
+}
+
+// SSH_CONNECTION is supplied by sshd and reports the client address after NAT.
+// It can differ from the backend's egress address, so the wizard confirms it.
+func panelIPFromSSH(data []byte) (string, error) {
+	var found string
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "RM_SSH_CONNECTION=") {
+			continue
+		}
+		fields := strings.Fields(strings.TrimPrefix(line, "RM_SSH_CONNECTION="))
+		if len(fields) != 4 || found != "" {
+			return "", errors.New("invalid SSH connection address; enter the panel IP manually")
+		}
+		ip := net.ParseIP(fields[0])
+		if ip == nil || !ip.IsGlobalUnicast() {
+			return "", errors.New("SSH did not report a reachable panel IP; enter it manually")
+		}
+		found = ip.String()
+	}
+	if found == "" {
+		return "", errors.New("SSH connection address is unavailable; enter the panel IP manually")
+	}
+	return found, nil
 }
 func (r *Real) confirmNodeInstall(ctx context.Context, j *NodeJob) error {
 	if j.Ready {

@@ -75,6 +75,14 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 		m.nodeInstallParams = msg.result.Install.Params
 	}
 	if msg.err != nil {
+		if msg.action == "node-install-detect-panel-ip" || msg.action == "node-install-panel-ip" {
+			m.problem = msg.err.Error()
+			value := ""
+			if msg.action == "node-install-panel-ip" {
+				value = m.nodeRequest.Install.PanelIP
+			}
+			return m.showNodePanelIP(value)
+		}
 		m.screen = "nodesResult"
 		if strings.HasPrefix(m.nodeAction, "node-install-") {
 			m.screen = "nodeInstallResult"

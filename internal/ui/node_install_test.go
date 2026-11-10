@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -29,6 +30,10 @@ func (f *provisionFake) ManageNodes(ctx context.Context, request services.NodeRe
 		f.status = services.NodeInstallStatus{ID: strings.Repeat("a", 32), Params: request.Install, Completed: make([]bool, 9)}
 	case "node-install-pending":
 		result.Jobs = []services.NodeInstallStatus{f.status}
+	case "node-install-detect-panel-ip":
+		result.Text = "192.0.2.20"
+	case "node-install-panel-ip":
+		f.status.Params.PanelIP = request.Install.PanelIP
 	case "node-install-step":
 		f.status.Completed[request.Stage] = true
 		f.status.Stage = request.Stage + 1
@@ -45,6 +50,54 @@ func (f *provisionFake) ManageNodes(ctx context.Context, request services.NodeRe
 		result.Install = &status
 	}
 	return result, nil
+}
+
+func TestNodeInstallDetectsPanelIPBeforeRemoteStages(t *testing.T) {
+	m := testModel(t, true)
+	service := &provisionFake{status: services.NodeInstallStatus{ID: strings.Repeat("c", 32), Completed: make([]bool, 9)}}
+	m.service = service
+	m.nodeAction = "node-install-add"
+	m.nodeInstallJob = &service.status
+	m.screen = "nodesProgress"
+	next, cmd := m.Update(nodeResultMsg{run: m.run, action: "node-install-authenticated", result: services.NodeResult{Install: &service.status}})
+	m = next.(Model)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if m.screen != "nodeInstallPanelIP" || m.inputs[0].Value() != "192.0.2.20" || len(service.requests) != 1 || service.requests[0].Action != "node-install-detect-panel-ip" {
+		t.Fatal("detection did not pause for review", m.screen)
+	}
+	m.inputs[0].SetValue("127.0.0.1")
+	if cmd := press(&m, tea.KeyEnter); cmd != nil || m.problem == "" {
+		t.Fatal("invalid source address accepted")
+	}
+	m.inputs[0].SetValue("192.0.2.21")
+	cmd = press(&m, tea.KeyEnter)
+	next, cmd = m.Update(cmd())
+	m = next.(Model)
+	if service.status.Params.PanelIP != "192.0.2.21" || service.requests[1].Action != "node-install-panel-ip" || cmd == nil {
+		t.Fatal("corrected address was not saved before stages")
+	}
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if service.requests[2].Action != "node-install-step" || service.requests[2].Stage != 0 {
+		t.Fatal("did not start preflight after address confirmation")
+	}
+}
+
+func TestNodeInstallDetectionFailureAllowsManualAddress(t *testing.T) {
+	m := testModel(t, true)
+	m.nodeAction = "node-install-add"
+	m.nodeInstallJob = &services.NodeInstallStatus{ID: strings.Repeat("d", 32)}
+	m.screen = "nodesProgress"
+	next, _ := m.Update(nodeResultMsg{run: m.run, action: "node-install-detect-panel-ip", err: errors.New("SSH address unavailable")})
+	m = next.(Model)
+	if m.screen != "nodeInstallPanelIP" || m.inputs[0].Value() != "" || m.problem == "" {
+		t.Fatal("no manual fallback after detection failure")
+	}
+	press(&m, tea.KeyEsc)
+	if m.screen != "nodeInstallResult" || m.nodeInstallJob == nil {
+		t.Fatal("cancelling address confirmation lost the resumable journal")
+	}
 }
 
 func TestNodeInstallWizardSavesBeforeAuthAndRequiresSSHCommit(t *testing.T) {

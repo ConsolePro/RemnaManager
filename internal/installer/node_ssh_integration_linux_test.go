@@ -129,4 +129,10 @@ func TestLivePinnedSSHConnection(t *testing.T) {
 	if err != nil || !strings.HasSuffix(string(data), "master-session-verified") {
 		t.Fatal("batch SSH did not reuse the authenticated connection", err)
 	}
+	// This fixture uses loopback: read the real sshd environment through the
+	// master, but refuse to propose its loopback client address for a firewall.
+	_, err = r.nodeProvision(ctx, services.NodeRequest{Action: "node-install-detect-panel-ip", JobID: j.ID})
+	if err == nil || !strings.Contains(err.Error(), "SSH did not report a reachable panel IP") {
+		t.Fatal("SSH address detection did not read/reject the fixture's loopback source", err)
+	}
 }
