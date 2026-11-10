@@ -13,12 +13,13 @@ import (
 func main() {
 	path := flag.String("config", config.DefaultPath, "configuration file")
 	version := flag.Bool("version", false, "print preview version")
+	demo := flag.Bool("demo", false, "simulate installation without changing the host")
 	flag.Parse()
 	if *version {
 		fmt.Println(updater.Version + " (Go TUI preview)")
 		return
 	}
-	if err := app.Run(context.Background(), *path); err != nil {
+	if err := app.RunMode(context.Background(), *path, *demo); err != nil {
 		fmt.Fprintln(os.Stderr, "remna:", err)
 		os.Exit(1)
 	}

@@ -9,7 +9,7 @@ func leaf(ru, en string) item                    { return item{ru: ru, en: en, a
 func group(ru, en string, children ...item) item { return item{ru: ru, en: en, children: children} }
 func menu() []item {
 	return []item{
-		group("Панель и подписка", "Panel and subscription",
+		group("Панель и компоненты", "Panel and components",
 			item{ru: "Установить панель", en: "Install panel", action: "install"},
 			leaf("Обновить панель", "Update panel"), leaf("Остановить панель", "Stop panel"), leaf("Логи панели", "Panel logs"),
 			group("Remnawave CLI", "Remnawave CLI", leaf("Статус компонентов", "Component status"), leaf("Доступ к панели", "Panel credentials"), leaf("Резервная копия БД", "Database backup"), leaf("Сменить API-токен", "Change API token"), leaf("Запустить панель", "Start panel"), leaf("CLI контейнера", "Container CLI")),

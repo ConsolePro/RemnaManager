@@ -64,6 +64,9 @@ type Model struct {
 	stage, run                                         int
 	scroll                                             int
 	logs                                               []string
+	proxyChoice                                        int
+	installCtx                                         context.Context
+	installCancel                                      context.CancelFunc
 }
 
 func New(ctx context.Context, store config.Store, cfg config.Config, checker updater.Checker, service services.PanelInstaller) Model {
@@ -139,13 +142,24 @@ func (m *Model) back() {
 		m.run++
 		m.screen = "menu"
 	case "domains":
+		if m.liveInstall() {
+			m.screen = "installOptions"
+		} else {
+			m.screen = "environment"
+		}
+	case "installOptions":
 		m.screen = "environment"
 	case "confirm":
 		m.screen = "domains"
 		m.inputs[m.focus].Focus()
 	case "progress":
+		m.cancelInstall()
 		m.run++
 		m.screen = "menu"
+	case "firewallVerify":
+		m.cancelInstall()
+		m.screen = "notice"
+		m.notice = m.l("Подтверждение не получено. Firewall будет автоматически отменён по таймеру.", "Not confirmed. Firewall will be rolled back automatically by its timer.")
 	default:
 		m.screen = "menu"
 	}
@@ -153,6 +167,14 @@ func (m *Model) back() {
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case confirmedInstallMsg:
+		m.saving = false
+		if msg.err != nil {
+			m.problem = msg.err.Error()
+		} else {
+			m.screen = "installResult"
+			m.problem = ""
+		}
 	case clockMsg:
 		// Repaint delayed-data status even while a collector is slow or blocked.
 		return m, headerClock()
@@ -204,10 +226,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		label := m.service.Stages()[msg.step]
-		m.logs = append(m.logs, m.l("Демо: ", "Demo: ")+m.l(label[0], label[1]))
+		prefix := m.l("Демо: ", "Demo: ")
+		if m.liveInstall() {
+			prefix = "✓ "
+		}
+		m.logs = append(m.logs, prefix+m.l(label[0], label[1]))
 		m.stage = msg.step + 1
 		if m.stage == len(m.service.Stages()) {
 			m.scroll = 0
+			if m.liveInstall() {
+				m.screen = "firewallVerify"
+			}
 		}
 		if m.stage < len(m.service.Stages()) {
 			return m, m.nextStep()
@@ -215,6 +244,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		key := msg.String()
 		if key == "ctrl+c" {
+			m.cancelInstall()
 			return m, tea.Quit
 		}
 		if key == "f1" {
@@ -230,6 +260,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.exitConfirm = false
 			case "enter":
 				if m.exitYes && !m.saving {
+					m.cancelInstall()
 					return m, tea.Quit
 				}
 				m.exitConfirm = false
@@ -274,6 +305,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "settings":
 					m.startSettings(true)
 				case "install":
+					m.cancelInstall()
 					m.run++
 					m.environment = ""
 					m.problem = ""
@@ -311,24 +343,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "environment":
 			if key == "enter" && m.environment != "" && m.problem == "" {
-				m.inputs = []textinput.Model{newInput("panel.example.com", ""), newInput("sub.example.com", "")}
-				m.focus = 0
+				m.prepareInstallInputs()
+				if m.liveInstall() {
+					m.screen = "installOptions"
+					return m, nil
+				}
 				m.screen = "domains"
 				return m, m.inputs[0].Focus()
 			}
 		case "domains":
 			if key == "tab" || key == "shift+tab" || key == "up" || key == "down" {
 				m.inputs[m.focus].Blur()
-				m.focus = 1 - m.focus
+				if key == "shift+tab" || key == "up" {
+					m.focus = (m.focus + len(m.inputs) - 1) % len(m.inputs)
+				} else {
+					m.focus = (m.focus + 1) % len(m.inputs)
+				}
 				return m, m.inputs[m.focus].Focus()
 			}
 			if key == "enter" {
-				if m.focus == 0 {
-					m.inputs[0].Blur()
-					m.focus = 1
-					return m, m.inputs[1].Focus()
+				if m.focus < len(m.inputs)-1 {
+					m.inputs[m.focus].Blur()
+					m.focus++
+					return m, m.inputs[m.focus].Focus()
 				}
 				p := m.parameters()
+				if m.liveInstall() {
+					if err := installer.ValidateParameters(p); err != nil {
+						m.problem = err.Error()
+						break
+					}
+				}
 				if !installer.ValidDomain(p.PanelDomain) || !installer.ValidDomain(p.SubscriptionDomain) || p.PanelDomain == p.SubscriptionDomain {
 					m.problem = m.l("Укажите два разных домена без https:// и пути (IDN: punycode).", "Enter two different domains without https:// or path (IDN: punycode).")
 					break
@@ -338,6 +383,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "confirm":
 			if key == "enter" {
+				m.cancelInstall()
+				m.installCtx, m.installCancel = context.WithCancel(m.ctx)
 				m.stage = 0
 				m.logs = nil
 				m.screen = "progress"
@@ -350,6 +397,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.problem = ""
 			}
 		case "notice":
+			if key == "enter" {
+				m.screen = "menu"
+			}
+		case "installOptions":
+			if key == "left" || key == "right" || key == "up" || key == "down" {
+				m.proxyChoice = 1 - m.proxyChoice
+			}
+			if key == "enter" {
+				m.screen = "domains"
+				return m, m.inputs[0].Focus()
+			}
+		case "firewallVerify":
+			if key == "enter" && m.problem == "" {
+				m.saving = true
+				return m, m.confirmFirewall()
+			}
+		case "installResult":
 			if key == "enter" {
 				m.screen = "menu"
 			}
@@ -366,11 +430,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 type pollStats struct{}
 
 func (m Model) parameters() services.PanelParameters {
-	return services.PanelParameters{PanelDomain: strings.ToLower(strings.TrimSpace(m.inputs[0].Value())), SubscriptionDomain: strings.ToLower(strings.TrimSpace(m.inputs[1].Value()))}
+	return m.installationParameters()
 }
 func (m Model) nextStep() tea.Cmd {
 	run, step, p := m.run, m.stage, m.parameters()
-	return func() tea.Msg { return stepMsg{run, step, m.service.Step(m.ctx, step, p)} }
+	ctx := m.installCtx
+	if ctx == nil {
+		ctx = m.ctx
+	}
+	return func() tea.Msg {
+		c, cancel := context.WithTimeout(ctx, 20*time.Minute)
+		defer cancel()
+		return stepMsg{run, step, m.service.Step(c, step, p)}
+	}
 }
 
 func (m Model) title() string {
@@ -391,7 +463,7 @@ func (m Model) statsView() string {
 	cpu := accent.Render(fmt.Sprintf("%.0f%%", s.CPU))
 	first := fmt.Sprintf("%s %d %s · %s", m.l("ЦП", "CPU"), s.CPUs, cores, cpu)
 	ram := fmt.Sprintf(m.l("ОЗУ %.1f / %.1f GB доступно", "RAM %.1f / %.1f GB available"), gb(s.Available), gb(s.Memory))
-	second := fmt.Sprintf(m.l("Диск / %.1f GB свободно из %.1f · %.0f%% · SWAP %.1f GB", "Disk / %.1f GB free of %.1f · %.0f%% · SWAP %.1f GB"), gb(s.Free), gb(s.Disk), s.DiskPercent, gb(s.Swap))
+	second := fmt.Sprintf(m.l("Диск %.1f GB свободно из %.1f · %.0f%% · SWAP %.1f GB", "Disk %.1f GB free of %.1f · %.0f%% · SWAP %.1f GB"), gb(s.Free), gb(s.Disk), s.DiskPercent, gb(s.Swap))
 	network := fmt.Sprintf("IPv4 %s  ·  IPv6 %s", s.IPv4, s.IPv6)
 	if m.contentWidth() < 58 {
 		return first + "\n" + muted.Render(ram) + "\n" + muted.Render(second) + "\n" + muted.Render(network)

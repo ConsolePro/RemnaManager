@@ -25,7 +25,11 @@ func (m Model) body() string {
 			} else if item.action == "pending" {
 				text += " · " + m.l("В разработке", "In development")
 			} else if item.action == "install" {
-				text += " · " + m.l("Демо", "Demo")
+				if m.liveInstall() {
+					text += " · " + m.l("Реальная установка", "Real installation")
+				} else {
+					text += " · " + m.l("Демо", "Demo")
+				}
 			}
 			if i == f.cursor {
 				text = accent.Render("› " + text)
@@ -59,20 +63,36 @@ func (m Model) body() string {
 		if m.checking {
 			status = m.l("Проверка окружения…", "Checking environment…")
 		}
+		if m.liveInstall() {
+			return accent.Render(m.l("Установка панели и компонентов", "Panel and component installation")) + "\n\n" + status + "\n\n" + m.l("Требуются два домена с A/AAAA на этот сервер и доступные TCP 80/443.\nСуществующие установки не перезаписываются.", "Two domains must resolve to this server; TCP 80/443 must be reachable.\nExisting unmanaged installations are not overwritten.") + "\n\n" + m.l("Enter — продолжить", "Enter — continue")
+		}
 		return accent.Render(m.l("Установка панели · ДЕМО", "Panel installation · DEMO")) + "\n\n" + status + "\n\n" + warning.Render(m.l("Все этапы фиктивные. Сервисы и файлы не изменяются.", "All stages are simulated. Services and files are not changed.")) + "\n\n" + m.l("Enter — продолжить", "Enter — continue")
 	case "domains":
+		if m.liveInstall() {
+			return m.realDomainsView()
+		}
 		return m.l("Домены панели и подписки · ДЕМО", "Panel and subscription domains · DEMO") + "\n\n" + m.l("Панель:", "Panel:") + "\n" + m.inputs[0].View() + "\n\n" + m.l("Подписка:", "Subscription:") + "\n" + m.inputs[1].View() + "\n\n" + m.l("Tab — поле · Enter — далее", "Tab — field · Enter — next")
 	case "confirm":
+		if m.liveInstall() {
+			return m.realConfirmationView()
+		}
 		p := m.parameters()
 		return m.l("Подтверждение демонстрации", "Confirm demonstration") + fmt.Sprintf("\n\nPanel: %s\nSubscription: %s\nEmail: %s\n\n", p.PanelDomain, p.SubscriptionDomain, m.cfg.Email) + warning.Render(m.l("Реальная установка не выполняется.", "No actual installation will be performed.")) + "\n\n" + m.l("Enter — запустить демо · Esc — изменить", "Enter — run demo · Esc — edit")
 	case "progress":
 		steps := m.service.Stages()
 		status := m.l("Демонстрация завершена. Enter — в меню.", "Demonstration complete. Enter — return to menu.")
+		if m.liveInstall() {
+			status = m.l("Установка завершена. Требуется подтверждение SSH.", "Installation finished. SSH confirmation is required.")
+		}
 		if m.stage < len(steps) {
 			status = m.l(steps[m.stage][0], steps[m.stage][1])
 		}
 		percent := float64(m.stage) / float64(len(steps))
-		rows := []string{accent.Render(m.l("Демонстрационная установка", "Demo installation")), accent.Render(status), m.classicProgressView(percent), fmt.Sprintf("%.0f%%", percent*100), ""}
+		title := m.l("Демонстрационная установка", "Demo installation")
+		if m.liveInstall() {
+			title = m.l("Реальная установка", "Real installation")
+		}
+		rows := []string{accent.Render(title), accent.Render(status), m.classicProgressView(percent), fmt.Sprintf("%.0f%%", percent*100), ""}
 		for i, step := range steps {
 			prefix := "○ "
 			if i < m.stage {
@@ -82,14 +102,29 @@ func (m Model) body() string {
 			}
 			rows = append(rows, prefix+m.l(step[0], step[1]))
 		}
-		rows = append(rows, "", m.l("Журнал (демонстрация)", "Log (simulation)"))
+		journal := m.l("Журнал (демонстрация)", "Log (simulation)")
+		if m.liveInstall() {
+			journal = m.l("Журнал этапов", "Stage log")
+		}
+		rows = append(rows, "", journal)
 		rows = append(rows, m.logs...)
-		if m.stage == len(steps) {
+		if m.stage == len(steps) && !m.liveInstall() {
 			rows = append(rows, "", accent.Render(m.l("Демонстрация завершена. Enter — в меню.", "Demonstration complete. Enter — return to menu.")))
 		}
 		return strings.Join(rows, "\n")
 	case "notice":
 		return m.notice + "\n\n" + m.l("Enter / Esc — в меню", "Enter / Esc — return to menu")
+	case "installOptions":
+		return m.installOptionsView()
+	case "firewallVerify":
+		if m.saving {
+			return m.l("Сохраняем подтверждённые правила…", "Saving confirmed firewall rules…")
+		}
+		s, _ := m.liveInstaller()
+		return warning.Render(m.l("ПРОВЕРЬТЕ SSH ВО ВТОРОЙ СЕССИИ", "VERIFY SSH IN A SECOND SESSION")) + "\n\n" + m.l("Откройте новое SSH-подключение и проверьте HTTPS панели.\nEnter — подтвердить доступ и сохранить firewall.\nБез подтверждения правила автоматически отменятся через 120 секунд.\nEsc — оставить автоматический откат.", "Open a new SSH connection and verify the panel's HTTPS.\nEnter — confirm access and persist the firewall.\nWithout confirmation the rules roll back after 120 seconds.\nEsc — leave automatic rollback armed.") + "\n\n" + s.Summary()
+	case "installResult":
+		s, _ := m.liveInstaller()
+		return accent.Render(m.l("Панель и подписка установлены", "Panel and subscription installed")) + "\n\n" + s.Summary() + "\n\n" + m.l("Enter — в меню", "Enter — return to menu")
 	}
 	return ""
 }
@@ -131,7 +166,14 @@ func (m Model) View() string {
 	} else if m.problem != "" {
 		vp.GotoBottom()
 	} else if m.screen == "domains" {
-		if m.focus == 1 && vp.Height < 7 {
+		if m.liveInstall() {
+			cursor := m.focus + 2
+			if cursor >= vp.YOffset+vp.Height {
+				vp.SetYOffset(cursor - vp.Height + 1)
+			} else if cursor < vp.YOffset {
+				vp.SetYOffset(cursor)
+			}
+		} else if m.focus == 1 && vp.Height < 7 {
 			vp.SetYOffset(7 - vp.Height)
 		}
 	}

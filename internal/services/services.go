@@ -3,7 +3,21 @@ package services
 
 import "context"
 
-type PanelParameters struct{ PanelDomain, SubscriptionDomain string }
+type PanelParameters struct {
+	PanelDomain, SubscriptionDomain string
+	Proxy, Email, Admin             string
+	SSHPorts                        []int
+}
+
+// LivePanelInstaller adds the host-changing installation lifecycle to the demo
+// interface. Confirm commits the firewall only after the operator checks SSH.
+type LivePanelInstaller interface {
+	PanelInstaller
+	Defaults() PanelParameters
+	Summary() string
+	Confirm(context.Context) error
+	Close() error
+}
 type PanelInstaller interface {
 	Check(context.Context) (string, error)
 	Stages() [][2]string
