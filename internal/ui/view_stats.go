@@ -46,7 +46,7 @@ func (m Model) classicStatsView() string {
 		v6 = "Not connected"
 	}
 	if v6 == "Not connected" {
-		v6 = m.l("IPv6 не подключён", "IPv6 disconnected")
+		v6 = "IPv6 —"
 	} else {
 		v6 = "IPv6 " + v6
 	}
@@ -60,14 +60,12 @@ func (m Model) classicStatsView() string {
 	if width < 66 || m.height < 24 {
 		return compactStats(cards, width)
 	}
-	panelColor := lipgloss.CompleteColor{TrueColor: "#151826", ANSI256: "234", ANSI: "0"}
-	cardColor := lipgloss.CompleteColor{TrueColor: "#1C2633", ANSI256: "235", ANSI: "0"}
-	label := lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Background(cardColor)
-	value := lipgloss.NewStyle().Foreground(lipgloss.Color("195")).Background(cardColor).Bold(true)
-	network := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(cardColor).Bold(true)
-	detail := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Background(cardColor)
+	label := lipgloss.NewStyle().Foreground(lipgloss.Color("247"))
+	value := lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true)
+	network := value
+	detail := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	primary := detail.Foreground(lipgloss.Color("250"))
-	available := width - 4 // Outer border and padding.
+	available := width
 	base := (available - 3) / 4
 	// Reserve enough space for the IPv4 label and address on the same line.
 	networkWidth := min(available-3-3*12, max(base, lipgloss.Width(cards[3].value)+4))
@@ -92,7 +90,11 @@ func (m Model) classicStatsView() string {
 				style = network
 			}
 			if i == 0 && j == 1 || i == 3 {
-				wrapped := strings.Split(ansi.Hardwrap(line, inner, true), "\n")
+				wrappedLine := ansi.Hardwrap(line, inner, true)
+				if i == 0 {
+					wrappedLine = ansi.Wrap(line, inner, "")
+				}
+				wrapped := strings.Split(wrappedLine, "\n")
 				if i == 0 && len(wrapped) > 2 {
 					wrapped = wrapped[:2]
 					wrapped[1] = ansi.Truncate(wrapped[1], max(1, inner-1), "…")
@@ -110,13 +112,12 @@ func (m Model) classicStatsView() string {
 		maxRows = max(maxRows, len(rows[i]))
 	}
 	for i := range cards {
-		// Rounded strokes keep the corners smooth without block-shaped pixels.
+		// Use the terminal's background throughout: no rectangular fill can
+		// protrude beyond the rounded frame or clash with an SSH color theme.
 		borderColor := lipgloss.CompleteColor{TrueColor: "#354052", ANSI256: "237", ANSI: "8"}
-		contents[i] = lipgloss.NewStyle().Background(cardColor).Border(lipgloss.RoundedBorder()).BorderForeground(borderColor).BorderBackground(panelColor).BorderLeftBackground(cardColor).BorderRightBackground(cardColor).Width(widths[i]-2).Height(maxRows).Padding(0, 1).Render(strings.Join(rows[i], "\n"))
+		contents[i] = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Border(lipgloss.RoundedBorder()).BorderForeground(borderColor).Width(widths[i]-2).Height(maxRows).Padding(0, 1).Render(strings.Join(rows[i], "\n"))
 	}
-	gap := lipgloss.NewStyle().Background(panelColor).Height(maxRows + 2).Render(" ")
-	panel := lipgloss.JoinHorizontal(lipgloss.Top, contents[0], gap, contents[1], gap, contents[2], gap, contents[3])
-	return lipgloss.NewStyle().Background(panelColor).Border(lipgloss.RoundedBorder()).BorderForeground(panelColor).Padding(0, 1).Render(panel)
+	return lipgloss.JoinHorizontal(lipgloss.Top, contents[0], " ", contents[1], " ", contents[2], " ", contents[3])
 }
 
 func (m Model) volumeLine(used, total uint64) string {

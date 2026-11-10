@@ -28,6 +28,16 @@ func TestRenderPreviewArtifacts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "menu.ansi"), []byte(m.View()), 0600); err != nil {
 		t.Fatal(err)
 	}
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	if err := os.WriteFile(filepath.Join(dir, "menu-256.ansi"), []byte(m.View()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 80, 30
+	if err := os.WriteFile(filepath.Join(dir, "menu-narrow.ansi"), []byte(m.View()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 124, 36
+	lipgloss.SetColorProfile(termenv.TrueColor)
 	m.screen = "progress"
 	m.stage = 4
 	m.height = 36
