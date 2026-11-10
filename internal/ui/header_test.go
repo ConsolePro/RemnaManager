@@ -17,10 +17,13 @@ func TestServerTimeAndUptime(t *testing.T) {
 	m.lastStats = now.Add(-2 * time.Second)
 	m.stats.Uptime = 90060
 	header := ansi.Strip(m.serverHeader(now))
-	for _, want := range []string{"10.11.2026 05:42:48 YEKT", "Аптайм: 1 д 01:01:02", "v1.0.0", "Remnawave"} {
+	for _, want := range []string{"REMNA MANAGER", "10.11.2026 05:42:48 YEKT", "Аптайм: 1 д 01:01:02", "v1.0.0", "Remnawave"} {
 		if !strings.Contains(header, want) {
 			t.Fatalf("missing %q: %s", want, header)
 		}
+	}
+	if strings.Contains(header, "LIVE") || strings.Contains(header, "█") {
+		t.Fatal("header must use readable text without LIVE", header)
 	}
 	later := ansi.Strip(m.serverHeader(now.Add(time.Second)))
 	if !strings.Contains(later, "05:42:49") || !strings.Contains(later, "01:01:03") {
@@ -48,7 +51,7 @@ func TestStatsCardsAndLongIPv6(t *testing.T) {
 	m.lastStats = time.Now()
 	m.stats = stats.Snapshot{CPUs: 2, CPU: 10, CPUModel: "Intel Xeon", Memory: 4 << 30, Available: 3 << 30, Swap: 1 << 29, Disk: 32 << 30, DiskUsed: 10 << 30, Free: 21 << 30, DiskPercent: 31, IPv4: "89.144.34.16", IPv6: "2001:db8:1234:5678:9abc:def0:1234:abcd", Uptime: 86401}
 	block := ansi.Strip(m.classicStatsView())
-	for _, want := range []string{"ЦП", "10%", "2 ядра", "Intel Xeon", "ОЗУ", "25%", "1.0 из 4.0 GB", "SWAP 0.5 GB", "Диск", "31%", "IP", "89.144.34.16", "2001:db8", ":abcd"} {
+	for _, want := range []string{"ЦП", "2 ядра", "Intel Xeon", "ОЗУ", "1.0 из 4.0 GB", "SWAP 0.5 GB", "Диск", "IP", "89.144.34.16", "2001:db8", ":abcd"} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("missing %q: %s", want, block)
 		}

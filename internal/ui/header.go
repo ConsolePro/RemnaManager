@@ -15,12 +15,6 @@ func (m Model) serverHeader(now time.Time) string {
 	compact := width < 62 || m.height < 24
 	title := accent.Render("REMNA MANAGER")
 	tagline := m.l("Управляй инфраструктурой Remnawave легко", "Manage your Remnawave infrastructure with ease")
-	if width >= 104 && m.height >= 28 {
-		title = largeTitle()
-	}
-	if compact {
-		title = accent.Render("REMNA MANAGER")
-	}
 	status := m.metricsStatus(now)
 	version := updater.Version + " · " + m.l("предварительная", "preview")
 	if updater.Newer(m.latest, updater.Version) {
@@ -78,7 +72,7 @@ func (m Model) metricsStatus(now time.Time) string {
 	if now.Sub(m.lastStats) > 5*time.Second {
 		return warning.Render(m.l("Метрики устарели", "Metrics delayed"))
 	}
-	return muted.Render("LIVE " + m.lastStats.Format("15:04:05"))
+	return ""
 }
 
 func formatUptime(seconds uint64, english bool) string {
@@ -92,37 +86,4 @@ func formatUptime(seconds uint64, english bool) string {
 		label = "d"
 	}
 	return fmt.Sprintf("%d %s %s", days, label, clock)
-}
-
-// Two rows of terminal blocks make the title larger without image protocols.
-func largeTitle() string {
-	font := map[rune][4]string{
-		'R': {"1110", "1001", "1110", "1011"}, 'E': {"1111", "1110", "1000", "1111"},
-		'M': {"10001", "11011", "10101", "10001"}, 'N': {"1001", "1101", "1011", "1001"},
-		'A': {"0110", "1001", "1111", "1001"}, 'G': {"0111", "1000", "1011", "0111"},
-		' ': {"00", "00", "00", "00"},
-	}
-	lines := make([]string, 2)
-	for row := 0; row < 2; row++ {
-		var line strings.Builder
-		for _, r := range "REMNA MANAGER" {
-			glyph := font[r]
-			for col := range glyph[0] {
-				top, bottom := glyph[row*2][col] == '1', glyph[row*2+1][col] == '1'
-				cell := " "
-				switch {
-				case top && bottom:
-					cell = "█"
-				case top:
-					cell = "▀"
-				case bottom:
-					cell = "▄"
-				}
-				line.WriteString(cell)
-			}
-			line.WriteByte(' ')
-		}
-		lines[row] = accent.Render(strings.TrimRight(line.String(), " "))
-	}
-	return strings.Join(lines, "\n")
 }

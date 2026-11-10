@@ -30,6 +30,7 @@ func TestStatsPollingAcrossScreens(t *testing.T) {
 				return stats.Snapshot{CPUs: 4, CPU: float64(reads * 17), Memory: 4 << 30, Available: uint64(reads) << 30, IPv4: "192.0.2.1", IPv6: "Not connected"}
 			}
 			for i := 1; i <= 3; i++ {
+				before := m.classicStatsView()
 				next, collect := m.Update(pollStats{})
 				m = next.(Model)
 				if collect == nil {
@@ -40,7 +41,7 @@ func TestStatsPollingAcrossScreens(t *testing.T) {
 				if tick == nil {
 					t.Fatal("polling stopped")
 				}
-				if !strings.Contains(m.View(), fmt.Sprintf("%d%%", i*17)) || !strings.Contains(m.View(), "LIVE") {
+				if m.stats.CPU != float64(i*17) || m.classicStatsView() == before || strings.Contains(m.View(), "LIVE") {
 					t.Fatal("header did not update", m.View())
 				}
 				if m.screen != screen || m.stage != 3 || m.frames[0].cursor != 2 || m.inputs[0].Value() != "admin@example.com" || m.inputs[0].Position() != 0 {

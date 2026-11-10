@@ -48,7 +48,7 @@ func (m Model) classicStatsView() string {
 	cards := []serverCard{
 		{m.l("ЦП", "CPU"), fmt.Sprintf("%.0f%%", s.CPU), []string{cores, model}},
 		{m.l("ОЗУ", "RAM"), ramPercent, []string{m.volumeLine(used, s.Memory), fmt.Sprintf(m.l("Дост. %.1f GB", "Avail. %.1f GB"), gb(s.Available)), fmt.Sprintf("SWAP %.1f GB", gb(s.Swap))}},
-		{m.l("Диск", "Disk"), fmt.Sprintf("%.0f%%", s.DiskPercent), []string{m.volumeLine(s.DiskUsed, s.Disk), fmt.Sprintf(m.l("Своб. %.1f GB", "Free %.1f GB"), gb(s.Free)), "/"}},
+		{m.l("Диск", "Disk"), fmt.Sprintf("%.0f%%", s.DiskPercent), []string{m.volumeLine(s.DiskUsed, s.Disk), fmt.Sprintf(m.l("Своб. %.1f GB", "Free %.1f GB"), gb(s.Free))}},
 		{"IP", "", []string{v4, "IPv6", v6}},
 	}
 	width := m.contentWidth()
@@ -62,7 +62,10 @@ func (m Model) classicStatsView() string {
 	maxRows := 4
 	for i, card := range cards {
 		inner := max(1, widths[i]-4)
-		rows[i] = []string{headerLine(accent.Render(card.title), accent.Render(card.value), inner)}
+		rows[i] = []string{accent.Render(card.title)}
+		if card.value != "" {
+			rows[i] = append(rows[i], largePercentage(card.value, inner)...)
+		}
 		for j, line := range card.lines {
 			if i == 0 && j == 1 {
 				wrapped := strings.Split(ansi.Hardwrap(line, inner, true), "\n")
