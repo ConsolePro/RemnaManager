@@ -64,7 +64,7 @@ func (m Model) classicStatsView() string {
 		inner := max(1, widths[i]-4)
 		rows[i] = []string{accent.Render(card.title)}
 		if card.value != "" {
-			rows[i] = append(rows[i], largePercentage(card.value, inner)...)
+			rows[i] = append(rows[i], accent.Render(card.value))
 		}
 		for j, line := range card.lines {
 			if i == 0 && j == 1 {

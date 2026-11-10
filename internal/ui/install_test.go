@@ -91,14 +91,3 @@ func TestCancelStopsInstallationContext(t *testing.T) {
 		t.Fatal("cancelled step restarted execution")
 	}
 }
-
-func TestPercentagesBecomeCompactWhenNarrow(t *testing.T) {
-	for _, value := range []string{"0%", "10%", "100%"} {
-		if got := largePercentage(value, 24); len(got) != 2 {
-			t.Fatal("wide percentages should use only two rows", value, got)
-		}
-		if got := largePercentage(value, 13); len(got) != 1 || !strings.Contains(got[0], value) {
-			t.Fatal("narrow percentages must be plain numbers", value, got)
-		}
-	}
-}
