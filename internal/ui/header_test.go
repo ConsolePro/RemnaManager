@@ -8,6 +8,7 @@ import (
 	"github.com/ConsolePro/RemnaManager/internal/system/stats"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 )
 
 func TestServerTimeAndUptime(t *testing.T) {
@@ -75,6 +76,38 @@ func TestStatsCardsAndLongIPv6(t *testing.T) {
 			if lipgloss.Width(line) > m.width {
 				t.Fatal("cards overflowed terminal", size)
 			}
+		}
+	}
+}
+
+func TestIPv4StyleRemainsStableAcrossMetricUpdates(t *testing.T) {
+	previous := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(previous)
+	for _, profile := range []termenv.Profile{termenv.ANSI, termenv.ANSI256, termenv.TrueColor} {
+		lipgloss.SetColorProfile(profile)
+		m := testModel(t, true)
+		m.width, m.height = 124, 36
+		m.lastStats = time.Now()
+		m.stats = stats.Snapshot{CPUs: 2, CPU: 10, Memory: 4 << 30, Available: 3 << 30, Disk: 32 << 30, IPv4: "192.0.2.10", IPv6: "2001:db8::1"}
+		networkSuffix := func() string {
+			for _, line := range strings.Split(m.classicStatsView(), "\n") {
+				if at := strings.Index(line, "IPv4 192.0.2.10"); at >= 0 {
+					// Include the SGR sequence that sets the network text's style.
+					start := strings.LastIndex(line[:at], "\x1b[")
+					if start < 0 {
+						t.Fatal("missing explicit network style")
+					}
+					return line[start:]
+				}
+			}
+			t.Fatal("missing IPv4 address")
+			return ""
+		}
+		before := networkSuffix()
+		m.stats.CPU = 25
+		m.stats.Available = 2 << 30
+		if after := networkSuffix(); before != after {
+			t.Fatalf("IPv4 style changed during a metrics refresh: %q -> %q", before, after)
 		}
 	}
 }

@@ -73,14 +73,14 @@ func (m Model) classicStatsView() string {
 	widths := []int{base, base, available - 3 - networkWidth - base*2, networkWidth}
 	contents := make([]string, 4)
 	rows := make([][]string, 4)
-	maxRows := 5
+	maxRows := 4
 	for i, card := range cards {
 		inner := max(1, widths[i]-4)
 		valueStyle := value
 		if i == 3 {
 			valueStyle = network
 		}
-		rows[i] = []string{label.Render(card.title), "", valueStyle.Render(card.value)}
+		rows[i] = []string{label.Render(card.title), valueStyle.Render(card.value)}
 		for j, line := range card.lines {
 			style := detail
 			if j == 0 {
