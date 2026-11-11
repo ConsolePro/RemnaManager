@@ -23,10 +23,14 @@ def fixture_certificate(directory, domain):
     subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", f"/CN={domain}", "-addext", f"subjectAltName=DNS:{domain}", "-keyout", str(directory / "privkey.pem"), "-out", str(directory / "fullchain.pem")], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 if name == "curl" and os.environ.get("RM_AGENT_V2_INTEGRATION") == "1":
-    assert "https://raw.githubusercontent.com/acmesh-official/acme.sh/807da6498377ee5e0cf43a78091f46f12dc59a89/acme.sh" in args
-    shutil.copyfile("/opt/acme.sh.fixture", args[args.index("-o")+1])
+    if "https://raw.githubusercontent.com/acmesh-official/acme.sh/807da6498377ee5e0cf43a78091f46f12dc59a89/acme.sh" in args:
+        shutil.copyfile(os.environ.get("RM_ACME_DOWNLOAD_SOURCE","/opt/acme.sh.fixture"), args[args.index("-o")+1])
+    elif os.environ.get("RM_REAL_ACME_INTEGRATION") == "1":
+        os.execv("/usr/bin/curl",["/usr/bin/curl"]+args)
+    else:
+        raise SystemExit("Unexpected network request in mocked ACME fixture")
 elif name == "sh":
-    if not args or not args[0].endswith("/acme.sh") or os.environ.get("RM_AGENT_V2_INTEGRATION") != "1":
+    if not args or not args[0].endswith("/acme.sh") or os.environ.get("RM_AGENT_V2_INTEGRATION") != "1" or os.environ.get("RM_REAL_ACME_INTEGRATION") == "1":
         os.execv("/bin/sh", ["/bin/sh"]+args)
     def option(key): return args[args.index(key)+1]
     home = pathlib.Path(option("--home"))

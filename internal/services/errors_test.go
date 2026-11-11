@@ -21,3 +21,13 @@ func TestErrorTextChoosesLanguageAndPreservesWrappedDiagnostics(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestNestedActionErrorsAreTranslated(t *testing.T) {
+	err := fmt.Errorf("%w: %w; remote log: /node/install.log", LocalizedError("Этап не завершён", "Stage failed"), LocalizedError("Не совпадает SHA256", "SHA256 mismatch"))
+	if got := ErrorText(err, "ru"); got != "Этап не завершён: Не совпадает SHA256; Журнал на ноде: /node/install.log" {
+		t.Fatal(got)
+	}
+	if got := ErrorText(err, "en"); got != err.Error() {
+		t.Fatal(got)
+	}
+}

@@ -1,7 +1,6 @@
 package services
 
 import (
-	"errors"
 	"strings"
 )
 
@@ -20,10 +19,25 @@ func ErrorText(err error, language string) string {
 	if language == "en" {
 		return text
 	}
-	var translated *localizedError
-	if errors.As(err, &translated) {
-		text = strings.Replace(text, translated.en, translated.ru, 1)
-		text = strings.Replace(text, "; private log: ", "; Приватный журнал: ", 1)
+	var translate func(error, int)
+	translate = func(current error, depth int) {
+		if current == nil || depth > 32 {
+			return
+		}
+		if localized, ok := current.(*localizedError); ok {
+			text = strings.Replace(text, localized.en, localized.ru, 1)
+		}
+		switch wrapped := current.(type) {
+		case interface{ Unwrap() []error }:
+			for _, child := range wrapped.Unwrap() {
+				translate(child, depth+1)
+			}
+		case interface{ Unwrap() error }:
+			translate(wrapped.Unwrap(), depth+1)
+		}
 	}
+	translate(err, 0)
+	text = strings.ReplaceAll(text, "; private log: ", "; Приватный журнал: ")
+	text = strings.ReplaceAll(text, "; remote log: ", "; Журнал на ноде: ")
 	return text
 }

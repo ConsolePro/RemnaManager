@@ -505,7 +505,7 @@ func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) 
 	if err != nil {
 		if j.Version >= 2 && request.Action == "node-install-step" {
 			label := NodeInstallStagesForVersion(j.Version)[request.Stage]
-			message := services.LocalizedError(fmt.Sprintf("Этап «%s» не завершён. Откройте «Незавершённые установки» для продолжения. Журнал на ноде: /var/lib/remnamanager-node/install.log. Установка: %s", label[0], j.ID), fmt.Sprintf("Stage %s failed. Resume from Pending installations. Node log: /var/lib/remnamanager-node/install.log. Installation: %s", label[1], j.ID))
+			message := services.LocalizedError(fmt.Sprintf("Этап «%s» не завершён. Продолжение: «Незавершённые установки». Установка: %s", label[0], j.ID), fmt.Sprintf("Stage %s failed. Resume from Pending installations. Installation: %s", label[1], j.ID))
 			return result, fmt.Errorf("%w: %w", message, err)
 		}
 		return result, fmt.Errorf("%w; installation %s is saved for resume", err, j.ID)
@@ -578,6 +578,9 @@ func (r *Real) runNodeAgent(ctx context.Context, j NodeJob, stage int) ([]byte, 
 	input.Write(nodeAgent)
 	data, err := r.Runner.Run(ctx, []byte(input.String()), "ssh", args...)
 	if err != nil {
+		if actionErr := nodeAgentFailure(data); actionErr != nil {
+			return data, fmt.Errorf("%w: %w; remote log: /var/lib/remnamanager-node/install.log", actionErr, err)
+		}
 		diagnostic := r.safeOutput(data)
 		for _, secret := range []string{j.Secret, j.RealityKey} {
 			if secret != "" {
@@ -588,7 +591,11 @@ func (r *Real) runNodeAgent(ctx context.Context, j NodeJob, stage int) ([]byte, 
 		if len(runes) > 2000 {
 			diagnostic = string(runes[len(runes)-2000:])
 		}
-		return data, fmt.Errorf("%w; %s; remote log: /var/lib/remnamanager-node/install.log", err, strings.TrimSpace(diagnostic))
+		detail := strings.TrimSpace(diagnostic)
+		if !strings.Contains(detail, "/var/lib/remnamanager-node/install.log") {
+			detail += "; remote log: /var/lib/remnamanager-node/install.log"
+		}
+		return data, fmt.Errorf("%w; %s", err, detail)
 	}
 	return data, nil
 }
