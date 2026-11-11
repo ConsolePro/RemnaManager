@@ -74,6 +74,30 @@ func TestPanelMenuHasNoPendingOperations(t *testing.T) {
 	check(menu()[0].children)
 }
 
+func TestPanelRemovalRequiresTypedConsentAndFinalConfirmation(t *testing.T) {
+	m := testModel(t, true)
+	service := &managedFake{}
+	m.service = service
+	next, _ := m.openPanelOperation(operation("Удалить панель и данные", "Remove panel and data", "panel-remove"))
+	m = next.(Model)
+	if m.screen != "panelInput" || !strings.Contains(m.body(), "безвозвратно") {
+		t.Fatal(m.body())
+	}
+	press(&m, tea.KeyEnter)
+	if m.screen != "panelInput" || len(service.requests) != 0 {
+		t.Fatal("empty confirmation accepted")
+	}
+	m.inputs[0].SetValue("DELETE")
+	press(&m, tea.KeyEnter)
+	if m.screen != "panelConfirm" || len(service.requests) != 0 || !strings.Contains(m.body(), "firewall") {
+		t.Fatal("final confirmation missing", m.body())
+	}
+	press(&m, tea.KeyEsc)
+	if len(service.requests) != 0 {
+		t.Fatal("cancelled removal executed")
+	}
+}
+
 func TestOfficialImageConfirmationCanGoBackWithoutInput(t *testing.T) {
 	m := testModel(t, true)
 	m.service = &managedFake{}

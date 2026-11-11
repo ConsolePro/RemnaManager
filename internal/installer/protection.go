@@ -184,21 +184,25 @@ func (r *Real) startProtection(ctx context.Context) error {
 		return err
 	}
 	if service == "mfa-gateway" && runtime.GOARCH == "arm64" {
+		services.ReportProgress(ctx, "Проверяю образ MFA для ARM64", "Checking the ARM64 MFA image")
 		buildDirectory := filepath.Join(r.Stack, "mfa-build")
 		if err := writeFile(filepath.Join(buildDirectory, "Dockerfile"), []byte(mfaDockerfile), 0600); err != nil {
 			return err
 		}
 		architecture, inspectErr := r.Runner.Run(ctx, nil, "docker", "image", "inspect", "--format", "{{.Architecture}}", mfaLocalImage)
 		if inspectErr != nil || strings.TrimSpace(string(architecture)) != "arm64" {
+			services.ReportProgress(ctx, "Собираю MFA-шлюз для ARM64; это может занять несколько минут", "Building the ARM64 MFA gateway; this may take several minutes")
 			if _, err := r.Runner.Run(ctx, nil, "docker", "build", "--pull", "--platform", "linux/arm64", "--tag", mfaLocalImage, buildDirectory); err != nil {
 				return err
 			}
 		}
 	} else {
+		services.ReportProgress(ctx, "Загружаю образ сервиса защиты "+service, "Downloading protection service image: "+service)
 		if _, err := r.compose(ctx, "pull", service); err != nil {
 			return err
 		}
 	}
+	services.ReportProgress(ctx, "Запускаю сервис защиты и ожидаю готовности", "Starting the protection service and waiting for readiness")
 	_, err := r.compose(ctx, "up", "-d", "--wait", "--wait-timeout", "120", service)
 	return err
 }

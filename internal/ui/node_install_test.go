@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -23,17 +25,26 @@ func (f *provisionFake) ManageNodes(ctx context.Context, request services.NodeRe
 	f.requests = append(f.requests, request)
 	result := services.NodeResult{}
 	switch request.Action {
-	case "node-install-scan", "node-install-rescan":
+	case "node-install-connect-scan", "node-install-scan", "node-install-rescan":
 		result.SSH = request.Install.SSH
 		result.Fingerprint = "SHA256:verified-test-key"
 	case "node-install-create":
 		f.status = services.NodeInstallStatus{ID: strings.Repeat("a", 32), Params: request.Install, Completed: make([]bool, 9)}
+	case "node-install-connect-create":
+		f.status = services.NodeInstallStatus{Version: 2, DetailsPending: true, ID: strings.Repeat("a", 32), Params: request.Install, Completed: make([]bool, 9)}
+	case "node-install-details":
+		identity := f.status.Params.SSH
+		f.status.Params = request.Install
+		f.status.Params.SSH = identity
+		f.status.DetailsPending = false
 	case "node-install-pending":
 		result.Jobs = []services.NodeInstallStatus{f.status}
 	case "node-install-detect-panel-ip":
 		result.Text = "192.0.2.20"
 	case "node-install-panel-ip":
 		f.status.Params.PanelIP = request.Install.PanelIP
+	case "node-install-key":
+		f.status.Params.SSH.IdentityFile = filepath.Join(os.TempDir(), "managed-node-key")
 	case "node-install-step":
 		f.status.Completed[request.Stage] = true
 		f.status.Stage = request.Stage + 1
@@ -45,7 +56,7 @@ func (f *provisionFake) ManageNodes(ctx context.Context, request services.NodeRe
 		f.status.Ready = true
 		f.status.FirewallPending = false
 	}
-	if request.Action != "node-install-scan" && request.Action != "node-install-rescan" && request.Action != "node-install-pending" {
+	if request.Action != "node-install-connect-scan" && request.Action != "node-install-scan" && request.Action != "node-install-rescan" && request.Action != "node-install-pending" {
 		status := f.status
 		result.Install = &status
 	}
@@ -61,9 +72,16 @@ func TestNodeInstallDetectsPanelIPBeforeRemoteStages(t *testing.T) {
 	m.screen = "nodesProgress"
 	next, cmd := m.Update(nodeResultMsg{run: m.run, action: "node-install-authenticated", result: services.NodeResult{Install: &service.status}})
 	m = next.(Model)
+	next, cmd = m.Update(cmd())
+	m = next.(Model)
+	// Bootstrap the managed key before detecting addresses or changing services.
+	if len(service.requests) != 1 || service.requests[0].Action != "node-install-key" {
+		t.Fatal("managed key bootstrap not requested")
+	}
+	// The key result schedules panel IP detection.
 	next, _ = m.Update(cmd())
 	m = next.(Model)
-	if m.screen != "nodeInstallPanelIP" || m.inputs[0].Value() != "192.0.2.20" || len(service.requests) != 1 || service.requests[0].Action != "node-install-detect-panel-ip" {
+	if m.screen != "nodeInstallPanelIP" || m.inputs[0].Value() != "192.0.2.20" || len(service.requests) != 2 || service.requests[1].Action != "node-install-detect-panel-ip" {
 		t.Fatal("detection did not pause for review", m.screen)
 	}
 	m.inputs[0].SetValue("127.0.0.1")
@@ -74,12 +92,12 @@ func TestNodeInstallDetectsPanelIPBeforeRemoteStages(t *testing.T) {
 	cmd = press(&m, tea.KeyEnter)
 	next, cmd = m.Update(cmd())
 	m = next.(Model)
-	if service.status.Params.PanelIP != "192.0.2.21" || service.requests[1].Action != "node-install-panel-ip" || cmd == nil {
+	if service.status.Params.PanelIP != "192.0.2.21" || service.requests[2].Action != "node-install-panel-ip" || cmd == nil {
 		t.Fatal("corrected address was not saved before stages")
 	}
 	next, _ = m.Update(cmd())
 	m = next.(Model)
-	if service.requests[2].Action != "node-install-step" || service.requests[2].Stage != 0 {
+	if service.requests[3].Action != "node-install-step" || service.requests[3].Stage != 0 {
 		t.Fatal("did not start preflight after address confirmation")
 	}
 }
@@ -104,9 +122,12 @@ func TestNodeInstallWizardSavesBeforeAuthAndRequiresSSHCommit(t *testing.T) {
 	m := testModel(t, true)
 	service := &provisionFake{}
 	m.service = service
-	next, _ := m.openNodeOperation(operation("Добавить ноду", "Add node", "node-install-add"))
+	next, _ := m.openNodeOperation(operation("???????? ????", "Add node", "node-install-add"))
 	m = next.(Model)
-	values := []string{"New_Node", "node.example.test", "22", "cover.example.test", "192.0.2.20", ""}
+	if m.screen != "nodeConnectInput" || len(m.inputs) != 3 {
+		t.Fatal("connection must come first", m.screen)
+	}
+	values := []string{"node.example.test", "22", ""}
 	for i, value := range values {
 		m.inputs[i].SetValue(value)
 	}
@@ -116,41 +137,59 @@ func TestNodeInstallWizardSavesBeforeAuthAndRequiresSSHCommit(t *testing.T) {
 	}
 	next, _ = m.Update(cmd())
 	m = next.(Model)
-	if m.screen != "nodesTrust" || len(service.requests) != 1 {
+	if m.screen != "nodesTrust" || service.requests[0].Action != "node-install-connect-scan" {
 		t.Fatal(m.screen)
 	}
-	m.inputs[0].SetValue("SHA256:verified-test-key")
-	press(&m, tea.KeyEnter)
-	if m.screen != "nodeInstallConfirm" || len(service.requests) != 1 {
-		t.Fatal("installation started without final confirmation")
+	// A first-time user can explicitly trust the displayed key instead of
+	// supplying a fingerprint they do not have. The backend still pins it.
+	press(&m, tea.KeyTab)
+	if !m.nodeTrustFirst {
+		t.Fatal("first-use trust unavailable")
 	}
 	cmd = press(&m, tea.KeyEnter)
 	next, cmd = m.Update(cmd())
 	m = next.(Model)
-	if service.requests[1].Action != "node-install-create" || m.nodeInstallJob == nil {
-		t.Fatal("journal was not created before SSH authentication")
+	if service.requests[1].Action != "node-install-connect-create" || m.nodeInstallJob == nil {
+		t.Fatal("connection was not saved before login")
 	}
 	next, _ = m.Update(cmd())
 	m = next.(Model)
 	if service.requests[2].Action != "node-install-auth" {
-		t.Fatal("SSH authentication was not requested")
+		t.Fatal("root authentication not requested")
 	}
-	// The real TUI suspends itself for native OpenSSH; emulate its completion.
 	next, cmd = m.Update(nodeResultMsg{run: m.run, action: "node-install-authenticated", result: services.NodeResult{Install: &service.status}})
 	m = next.(Model)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if m.screen != "nodeDetailsInput" || service.requests[3].Action != "node-install-key" || service.status.Params.SSH.IdentityFile == "" {
+		t.Fatal("details shown before key verification", m.screen)
+	}
+	details := []string{"New_Node", "DE", "New_Node_Profile", "3333", "cover.example.test", "studio", "192.0.2.20"}
+	for i, value := range details {
+		m.inputs[i].SetValue(value)
+	}
+	for range len(details) - 1 {
+		press(&m, tea.KeyTab)
+	}
+	if cmd = press(&m, tea.KeyEnter); cmd != nil || m.screen != "nodeInstallConfirm" {
+		t.Fatal("missing final installation consent", m.screen, m.problem)
+	}
+	cmd = press(&m, tea.KeyEnter)
 	for cmd != nil {
-		next, c := m.Update(cmd())
+		next, cmd = m.Update(cmd())
 		m = next.(Model)
-		cmd = c
 	}
 	if m.screen != "nodeInstallVerify" || service.status.Ready || !service.status.FirewallPending {
-		t.Fatal("firewall was committed without explicit SSH verification")
+		t.Fatal("firewall was committed without verification", m.screen)
+	}
+	if service.status.Params.CountryCode != "DE" || service.status.Params.APIPort != 3333 || service.status.Params.ProfileName != "New_Node_Profile" {
+		t.Fatal("details lost")
 	}
 	cmd = press(&m, tea.KeyEnter)
 	next, _ = m.Update(cmd())
 	m = next.(Model)
 	if m.screen != "nodeInstallResult" || !m.nodeInstallJob.Ready || service.requests[len(service.requests)-1].Action != "node-install-confirm" {
-		t.Fatal("firewall confirmation was lost")
+		t.Fatal("firewall confirmation lost")
 	}
 }
 

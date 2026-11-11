@@ -156,12 +156,8 @@ func TestDemoAndStaleMessages(t *testing.T) {
 		t.Fatal(m.screen)
 	}
 	cmd = press(&m, tea.KeyEnter)
-	for cmd != nil {
-		next, c := m.Update(cmd())
-		m = next.(Model)
-		cmd = c
-	}
-	if m.stage != 7 || len(m.logs) != 7 || !strings.Contains(m.View(), "100%") {
+	finishInstallCommands(&m, cmd)
+	if m.stage != 7 || !strings.Contains(m.View(), "100%") {
 		t.Fatal(m.stage, m.logs)
 	}
 	oldRun := m.run

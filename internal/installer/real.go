@@ -59,7 +59,7 @@ func (r *Real) Defaults() services.PanelParameters {
 func (r *Real) Installed() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.state.Ready && !r.state.FirewallPending && !r.state.ProtectionPending
+	return r.state.Ready && !r.state.FirewallPending && !r.state.ProtectionPending && !r.state.RemovalPending
 }
 
 func (r *Real) systemPath(path string) string {
@@ -98,6 +98,9 @@ func (r *Real) Check(ctx context.Context) (string, error) {
 		return "", e
 	}
 	r.state = s
+	if s.RemovalPending {
+		return "", errors.New("finish interrupted removal using Panel and components → Remove panel")
+	}
 	if s.ProtectionPending {
 		return "", errors.New("resume the pending configuration using Panel and components → Panel protection")
 	}
@@ -143,6 +146,9 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 	if stage < 0 || stage >= len(r.Stages()) {
 		return errors.New("invalid installation stage")
 	}
+	if stage == 0 {
+		services.ReportProgress(ctx, "Проверяю параметры установки", "Validating installation parameters")
+	}
 	if err := ValidateParameters(p); err != nil {
 		return err
 	}
@@ -167,6 +173,9 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 		if e != nil {
 			return e
 		}
+		if s.RemovalPending {
+			return errors.New("finish interrupted panel removal before installing again")
+		}
 		if s.RecoveryBackup != "" {
 			return fmt.Errorf("backend recovery required before resuming installation; backup: %s", s.RecoveryBackup)
 		}
@@ -177,10 +186,12 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 			return errors.New("resume Panel protection before running the installer")
 		}
 		if s.Params.PanelDomain == "" {
+			nodeSSH := s.NodeSSH
 			s, e = newState(p)
 			if e != nil {
 				return e
 			}
+			s.NodeSSH = nodeSSH
 			s.BackendTag = "3.4.9"
 		} else {
 			comparison := s.Params
@@ -224,30 +235,39 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 	}
 	// Recheck readiness and firewall even on resume; no regenerated credentials.
 	if r.state.Completed[stage] && (stage == 2 || stage == 6) {
+		services.ReportProgress(ctx, "Настройки уже сохранены — использую готовую конфигурацию", "Configuration already saved — reusing existing settings")
 		return nil
 	}
 	var err error
 	switch stage {
 	case 0:
+		services.ReportProgress(ctx, "Сохраняю параметры и защищённое состояние установки", "Saving parameters and private installation state")
 		err = saveState(statePath(r.Root), r.state)
 	case 1:
+		services.ReportProgress(ctx, "Проверяю установленные пакеты и зависимости", "Checking installed packages and dependencies")
 		_, err = r.Runner.Run(ctx, setupScript, "bash", "-s", "--", p.Proxy, runtime.GOARCH)
 	case 2:
+		services.ReportProgress(ctx, "Проверяю совместимость firewall", "Checking firewall compatibility")
 		if err = r.checkFirewall(ctx); err == nil {
+			services.ReportProgress(ctx, "Создаю Compose-конфигурацию и закрытые файлы с секретами", "Creating Compose configuration and private secret files")
 			err = r.configure()
 		}
 	case 3:
+		services.ReportProgress(ctx, "Загружаю образы PostgreSQL, Valkey и панели", "Downloading PostgreSQL, Valkey and panel images")
 		if _, err = r.compose(ctx, "pull", "remnawave", "remnawave-db", "remnawave-redis"); err == nil {
+			services.ReportProgress(ctx, "Запускаю контейнеры и ожидаю готовности сервисов", "Starting containers and waiting for service health")
 			_, err = r.compose(ctx, "up", "-d", "--wait", "--wait-timeout", "240", "remnawave")
 		}
 	case 4:
 		err = r.bootstrap(ctx)
 	case 5:
+		services.ReportProgress(ctx, "Сохраняю настройки и загружаю образ страницы подписки", "Saving settings and downloading the subscription page image")
 		if err = writeFile(filepath.Join(r.Stack, "subscription.env"), renderSubEnv(r.state), 0600); err == nil {
 			_, err = r.compose(ctx, "--profile", "subscription", "pull", "subscription")
 		}
 		if err == nil {
 			var digest []byte
+			services.ReportProgress(ctx, "Проверяю и фиксирую digest образа подписки", "Verifying and pinning the subscription image digest")
 			digest, err = r.Runner.Run(ctx, nil, "docker", "image", "inspect", "--format", "{{index .RepoDigests 0}}", r.state.SubImage)
 			if err == nil {
 				image := strings.TrimSpace(string(digest))
@@ -266,18 +286,22 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 			}
 		}
 		if err == nil {
+			services.ReportProgress(ctx, "Запускаю контейнер страницы подписки", "Starting the subscription page container")
 			_, err = r.compose(ctx, "--profile", "subscription", "up", "-d", "subscription")
 		}
 		if err == nil {
+			services.ReportProgress(ctx, "Ожидаю готовности страницы подписки", "Waiting for the subscription page to become ready")
 			err = r.waitSubscription(ctx)
 		}
 	case 6:
+		services.ReportProgress(ctx, "Настраиваю выбранную защиту панели", "Configuring the selected panel protection")
 		if err = r.startProtection(ctx); err == nil {
 			err = r.configureProxy(ctx)
 		}
 	case 7:
 		err = r.waitHTTPS(ctx)
 	case 8:
+		services.ReportProgress(ctx, "Настраиваю firewall и автоматический откат; сохраняю доступ по SSH", "Configuring firewall and automatic rollback; preserving SSH access")
 		err = r.applyFirewall(ctx)
 	}
 	if err != nil {
@@ -349,17 +373,20 @@ func (r *Real) Close() error {
 }
 
 func (r *Real) preflight(ctx context.Context, p services.PanelParameters) error {
+	services.ReportProgress(ctx, "Проверяю сервер и отсутствие чужой установки", "Checking the server and existing installations")
 	if _, e := os.Stat(filepath.Join(r.Stack, ".remnamanager-go")); errors.Is(e, os.ErrNotExist) {
 		if entries, e := os.ReadDir(r.Stack); e == nil && len(entries) > 0 {
 			return errors.New("existing /opt/remnawave is not managed by this installer; refusing overwrite")
 		}
 	}
 	for _, domain := range proxyDomains(p) {
+		services.ReportProgress(ctx, "Проверяю DNS домена "+domain, "Checking DNS for "+domain)
 		ips, e := net.DefaultResolver.LookupIPAddr(ctx, domain)
 		if e != nil || len(ips) == 0 {
 			return fmt.Errorf("DNS is not ready for %s", domain)
 		}
 	}
+	services.ReportProgress(ctx, "Определяю SSH-порты и проверяю сохранение доступа", "Detecting SSH ports and verifying access preservation")
 	ssh, e := DetectSSHPorts(ctx, r.Runner)
 	if e != nil {
 		return e
@@ -375,6 +402,7 @@ func (r *Real) preflight(ctx context.Context, p services.PanelParameters) error 
 			return fmt.Errorf("SSH port %d must be preserved", port)
 		}
 	}
+	services.ReportProgress(ctx, "Проверяю доступность портов панели и прокси", "Checking panel and proxy port availability")
 	data, e := r.Runner.Run(ctx, nil, "ss", "-H", "-ltnp")
 	if e != nil {
 		return e
@@ -395,13 +423,16 @@ func (r *Real) preflight(ctx context.Context, p services.PanelParameters) error 
 		}
 	}
 	if !managed && p.Proxy == "caddy" {
-		if _, e = os.Stat("/etc/caddy/Caddyfile"); e == nil {
+		if _, e = os.Stat(r.systemPath("/etc/caddy/Caddyfile")); e == nil {
 			return errors.New("existing Caddyfile is not managed; refusing overwrite")
 		}
 	}
 	if !managed && p.Proxy == "nginx" {
-		if _, e = os.Stat("/etc/nginx"); e == nil {
-			return errors.New("existing Nginx configuration requires explicit migration; refusing overwrite")
+		if _, e = os.Stat(r.systemPath("/etc/nginx")); e == nil {
+			retained, _ := os.ReadFile(filepath.Join(r.Root, "retained-proxy"))
+			if string(retained) != "nginx\n" {
+				return errors.New("existing Nginx configuration requires explicit migration; refusing overwrite")
+			}
 		}
 	}
 	return nil

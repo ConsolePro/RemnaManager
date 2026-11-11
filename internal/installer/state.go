@@ -32,6 +32,9 @@ type State struct {
 	CookieKey, CookieValue, TinyPassword, TinyHash                       string
 	MFAPassword, MFASigningKey                                           string
 	ProtectionPending                                                    bool
+	RemovalPending                                                       bool
+	RemovalPhase                                                         int
+	Removed                                                              bool
 	Completed                                                            map[int]bool
 	FirewallPending                                                      bool
 	FirewallOwned                                                        bool
@@ -72,7 +75,8 @@ func loadState(path string) (State, error) {
 		return s, e
 	}
 	e = json.Unmarshal(data, &s)
-	if e == nil && (s.Completed == nil || s.DBPassword == "" || s.AdminPassword == "") {
+	removed := s.Removed && s.Params.PanelDomain == "" && !s.RemovalPending
+	if e == nil && !removed && (s.Completed == nil || s.DBPassword == "" || s.AdminPassword == "") {
 		e = errors.New("invalid installation state; restore backup rather than overwriting secrets")
 	}
 	return s, e

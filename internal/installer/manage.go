@@ -25,7 +25,8 @@ func (r *Real) Manage(ctx context.Context, request services.PanelRequest) (servi
 	return r.manage(ctx, request)
 }
 
-func (r *Real) prepareManagement(ctx context.Context) error {
+func (r *Real) prepareManagement(ctx context.Context, removal ...bool) error {
+	allowRemoval := len(removal) > 0 && removal[0]
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -34,19 +35,21 @@ func (r *Real) prepareManagement(ctx context.Context) error {
 		return err
 	}
 	if s.Params.PanelDomain == "" {
-		return errors.New("install the panel first; no managed installation state was found")
+		return services.LocalizedError("Сначала установите панель: сохранённое состояние установки не найдено.", "install the panel first; no managed installation state was found")
 	}
 	if err = ValidateParameters(s.Params); err != nil {
 		return err
 	}
 	marker, err := os.ReadFile(filepath.Join(r.Stack, ".remnamanager-go"))
 	if err != nil || string(marker) != "managed\n" {
-		return errors.New("the Compose stack is not owned by RemnaManager; refusing to modify it")
+		if !allowRemoval || (!s.RemovalPending && !r.removablePartialStack(s)) {
+			return services.LocalizedError("Не найден маркер принадлежности стека RemnaManager. Изменение чужой установки запрещено.", "the Compose stack is not owned by RemnaManager; refusing to modify it")
+		}
 	}
 	if r.lock == nil {
 		r.lock, err = lockFile(filepath.Join(r.Root, "install.lock"))
 		if err != nil {
-			return errors.New("another RemnaManager operation is running")
+			return services.LocalizedError("Уже выполняется другая операция RemnaManager. Дождитесь её завершения.", "another RemnaManager operation is running")
 		}
 	}
 	// Another process may have completed between the initial read and flock.
@@ -58,6 +61,9 @@ func (r *Real) prepareManagement(ctx context.Context) error {
 		return err
 	}
 	r.state = s
+	if s.RemovalPending && !allowRemoval {
+		return services.LocalizedError("Удаление панели было прервано. Выберите «Панель и компоненты → Удалить панель и данные», чтобы завершить очистку.", "panel removal was interrupted; choose Remove panel to finish")
+	}
 	if r.log == nil {
 		r.log, err = os.CreateTemp(r.Root, "management-*.log")
 		if err != nil {
@@ -90,8 +96,20 @@ func (r *Real) manage(ctx context.Context, request services.PanelRequest) (servi
 		result.TextRU = accessDetails(s, r.Root, true) + "\nКопирование в терминале: Ctrl+Shift+C или меню мыши."
 		return result, nil
 	}
-	if err := r.prepareManagement(ctx); err != nil {
+	if request.Action == "panel-remove" && request.Value != "DELETE" {
+		return result, errors.New("panel removal requires typing DELETE to confirm permanent data loss")
+	}
+	if err := r.prepareManagement(ctx, request.Action == "panel-remove"); err != nil {
 		return result, err
+	}
+	if request.Action == "panel-remove" {
+		if err := r.removePanel(ctx); err != nil {
+			return result, fmt.Errorf("removal incomplete; retry Remove panel: %w; private log: %s", err, r.LogPath)
+		}
+		return services.PanelResult{
+			Text:   "Panel, subscription and authentication data removed. You can install the panel again. Backups, certificates, Docker, proxy packages and RemnaManager were preserved. Remote nodes were not changed.",
+			TextRU: "Панель, подписка и данные дополнительного входа удалены. Можно установить панель заново.\nРезервные копии, сертификаты, Docker, пакеты прокси и RemnaManager сохранены. Удалённые ноды не изменены.",
+		}, nil
 	}
 	s := r.state
 	var err error
@@ -124,6 +142,9 @@ func (r *Real) manage(ctx context.Context, request services.PanelRequest) (servi
 		}
 		if s.SubRecovery != "" {
 			result.Text += "\nSubscription recovery pending: " + s.SubRecovery
+		}
+		if readiness := nodeReadinessError(s); readiness != nil {
+			result.Text += "\n\n" + services.ErrorText(readiness, "en")
 		}
 	case "panel-logs":
 		data, err = r.compose(ctx, append([]string{"--profile", "subscription", "logs", "--tail", "100", "--no-color", "--timestamps"}, r.panelServices()...)...)
@@ -184,6 +205,9 @@ func (r *Real) manage(ctx context.Context, request services.PanelRequest) (servi
 		}
 		if s.SubRecovery != "" {
 			result.TextRU += "\nТребуется восстановление подписки: " + s.SubRecovery
+		}
+		if readiness := nodeReadinessError(s); readiness != nil {
+			result.TextRU += "\n\n" + services.ErrorText(readiness, "ru")
 		}
 	case "panel-stop":
 		result.TextRU = "Панель, подписка, PostgreSQL и Valkey остановлены.\nДанные, прокси, сертификаты и firewall сохранены."

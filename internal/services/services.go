@@ -70,11 +70,15 @@ type NodeRequest struct {
 }
 
 type NodeInstallParameters struct {
-	Name, Address, Domain, PanelIP string
-	SSH                            NodeSSH
+	Name, Address, Domain, PanelIP         string
+	ProfileName, CountryCode, SiteTemplate string
+	APIPort                                int
+	SSH                                    NodeSSH
 }
 
 type NodeInstallStatus struct {
+	Version                int
+	DetailsPending         bool
 	ID                     string
 	Params                 NodeInstallParameters
 	Stage                  int

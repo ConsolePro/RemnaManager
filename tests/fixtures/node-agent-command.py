@@ -7,6 +7,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import urllib.request
 
 if os.environ.get("RM_AGENT_STAGES_INTEGRATION") != "1" or not pathlib.Path("/.dockerenv").exists():
     raise SystemExit("Node agent fixture commands require the disposable test container")
@@ -17,7 +18,49 @@ state = pathlib.Path("/var/lib/remnamanager-node-fixture")
 state.mkdir(mode=0o700, exist_ok=True)
 timer = state / "timer"
 
-if name == "dpkg-query":
+def fixture_certificate(directory, domain):
+    directory.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", f"/CN={domain}", "-addext", f"subjectAltName=DNS:{domain}", "-keyout", str(directory / "privkey.pem"), "-out", str(directory / "fullchain.pem")], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+if name == "curl" and os.environ.get("RM_AGENT_V2_INTEGRATION") == "1":
+    assert "https://raw.githubusercontent.com/acmesh-official/acme.sh/807da6498377ee5e0cf43a78091f46f12dc59a89/acme.sh" in args
+    shutil.copyfile("/opt/acme.sh.fixture", args[args.index("-o")+1])
+elif name == "sh":
+    if not args or not args[0].endswith("/acme.sh") or os.environ.get("RM_AGENT_V2_INTEGRATION") != "1":
+        os.execv("/bin/sh", ["/bin/sh"]+args)
+    def option(key): return args[args.index(key)+1]
+    home = pathlib.Path(option("--home"))
+    domain = "cover.fixture.test"
+    certificate = state / "certificate"
+    if "--register-account" in args:
+        (state / "acme-account").write_text("registered")
+    elif "--issue" in args:
+        assert option("--keylength") == "ec-256" and option("--server") == "letsencrypt"
+        webroot = pathlib.Path(option("--webroot"))
+        token = webroot / ".well-known/acme-challenge/fixture-token"
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text("acme-http-01-fixture")
+        token.chmod(0o644)
+        request = urllib.request.Request("http://127.0.0.1/.well-known/acme-challenge/fixture-token", headers={"Host":domain})
+        assert urllib.request.urlopen(request, timeout=5).read() == b"acme-http-01-fixture"
+        token.unlink()
+        if (certificate / "fullchain.pem").exists(): raise SystemExit(2)
+        fixture_certificate(certificate,domain)
+    elif "--install-cert" in args:
+        renewal = {"fullchain":option("--fullchain-file"),"key":option("--key-file"),"reload":option("--reloadcmd")}
+        (state / "renewal.json").write_text(json.dumps(renewal))
+        shutil.copyfile(certificate / "fullchain.pem",renewal["fullchain"])
+        shutil.copyfile(certificate / "privkey.pem",renewal["key"])
+        subprocess.run(["/bin/sh",renewal["reload"]],check=True)
+    elif "--cron" in args:
+        renewal=json.loads((state / "renewal.json").read_text())
+        fixture_certificate(certificate,domain)
+        shutil.copyfile(certificate / "fullchain.pem",renewal["fullchain"])
+        shutil.copyfile(certificate / "privkey.pem",renewal["key"])
+        subprocess.run(["/bin/sh",renewal["reload"]],check=True)
+        (state / "renewed").write_text("yes")
+    else: raise SystemExit("Unexpected ACME fixture command")
+elif name == "dpkg-query":
     print("install ok installed")
 elif name == "docker":
     if args[:1] == ["version"]:
@@ -92,6 +135,8 @@ elif name == "systemctl":
             subprocess.run(["/usr/sbin/nginx"], check=True)
     elif args[:2] == ["reload", "nginx"]:
         subprocess.run(["/usr/sbin/nginx", "-s", "reload"], check=True)
+    elif args[:2] == ["start", "remnamanager-node-acme.service"]:
+        subprocess.run(["sh","/var/lib/remnamanager-node/acme/acme.sh","--cron","--home","/var/lib/remnamanager-node/acme","--config-home","/var/lib/remnamanager-node/acme"],check=True)
     elif args[0] not in ("enable", "disable", "daemon-reload", "reset-failed"):
         raise SystemExit("Unexpected fixture systemctl command")
 else:

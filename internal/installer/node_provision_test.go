@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -74,8 +75,21 @@ func TestNodeJournalPreservesKeysAndPublicStatusHidesSecrets(t *testing.T) {
 }
 
 func TestInterruptedProfileAndHostCreationReconcilesWithoutDuplicates(t *testing.T) {
+	for _, version := range []int{1, 2} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) { testInterruptedProfileAndHost(t, version) })
+	}
+}
+func testInterruptedProfileAndHost(t *testing.T, version int) {
 	r, _ := managementFixture(t)
 	j := provisionJob(t)
+	j.Version = version
+	if version == 2 {
+		j.Params.CountryCode = "DE"
+		j.Params.APIPort = 3333
+		if err := prepareNewNodeSettings(&j); err != nil {
+			t.Fatal(err)
+		}
+	}
 	const profileID = "11111111-2222-4333-8444-000000000001"
 	const inboundID = "11111111-2222-4333-8444-000000000002"
 	const nodeID = "11111111-2222-4333-8444-000000000003"
@@ -91,7 +105,7 @@ func TestInterruptedProfileAndHostCreationReconcilesWithoutDuplicates(t *testing
 				return
 			}
 			if path == "/config-profiles/"+profileID+"/inbounds" {
-				json.NewEncoder(w).Encode(map[string]any{"response": map[string]any{"inbounds": []any{map[string]string{"tag": "RM_REALITY_" + j.ID[:12], "uuid": inboundID}}}})
+				json.NewEncoder(w).Encode(map[string]any{"response": map[string]any{"inbounds": []any{map[string]string{"tag": nodeInboundTag(j), "uuid": inboundID}}}})
 				return
 			}
 			if values, ok := collections[path]; ok {
@@ -134,6 +148,15 @@ func TestInterruptedProfileAndHostCreationReconcilesWithoutDuplicates(t *testing
 	if err := r.ensureNodeProfile(context.Background(), &j); err != nil {
 		t.Fatal("profile was not recovered", err)
 	}
+	if version == 2 {
+		j.Completed[0] = true
+		if err := r.runNodeStage(context.Background(), &j, 1); err != nil {
+			t.Fatal("profile and node must be created before deployment", err)
+		}
+		if posts["/nodes"] != 1 || posts["/hosts"] != 0 {
+			t.Fatal("wrong API creation order", posts)
+		}
+	}
 	if err := r.ensureNodeObjects(context.Background(), &j); err == nil {
 		t.Fatal("lost host response unexpectedly succeeded")
 	}
@@ -149,6 +172,13 @@ func TestInterruptedProfileAndHostCreationReconcilesWithoutDuplicates(t *testing
 	for _, path := range []string{"/config-profiles", "/nodes", "/hosts", "/internal-squads"} {
 		if posts[path] != 1 {
 			t.Fatal("duplicate resource", path, posts[path])
+		}
+	}
+	if version == 2 {
+		node := collections["/nodes"][0]
+		host := collections["/hosts"][0]
+		if node["port"] != float64(3333) || node["countryCode"] != "DE" || host["fingerprint"] != "firefox" {
+			t.Fatal("new node details missing", node, host)
 		}
 	}
 	before := j.RealityKey

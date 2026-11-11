@@ -17,6 +17,29 @@ type liveFake struct {
 	installed        bool
 }
 
+// Run installation commands as Bubble Tea does, without driving the timer loop.
+func finishInstallCommands(m *Model, cmd tea.Cmd) {
+	queue := []tea.Cmd{cmd}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if current == nil {
+			continue
+		}
+		msg := current()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			queue = append(queue, batch...)
+			continue
+		}
+		if _, ok := msg.(installTickMsg); ok {
+			continue
+		}
+		next, follow := m.Update(msg)
+		*m = next.(Model)
+		queue = append(queue, follow)
+	}
+}
+
 func (*liveFake) Check(context.Context) (string, error) { return "Linux · SSH 2222", nil }
 func (*liveFake) Stages() [][2]string                   { return installer.NewReal().Stages() }
 func (s *liveFake) Step(ctx context.Context, _ int, p services.PanelParameters) error {
@@ -62,11 +85,7 @@ func TestRealWizardRequiresExplicitFirewallConfirmation(t *testing.T) {
 		t.Fatal(m.screen, m.body())
 	}
 	cmd = press(&m, tea.KeyEnter)
-	for cmd != nil {
-		next, c := m.Update(cmd())
-		m = next.(Model)
-		cmd = c
-	}
+	finishInstallCommands(&m, cmd)
 	if m.screen != "firewallVerify" || service.confirmed != 0 || service.steps != 9 || service.proxy != "caddy" {
 		t.Fatal(m.screen, service)
 	}

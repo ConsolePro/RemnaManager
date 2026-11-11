@@ -29,6 +29,7 @@ func (m Model) openNodeOperation(selected item) (tea.Model, tea.Cmd) {
 	if strings.HasPrefix(selected.action, "node-install-") {
 		return m.openNodeInstall(selected)
 	}
+	m.nodeConnectWizard = false
 	m.nodeAction = selected.action
 	m.nodeTitle = m.l(selected.ru, selected.en)
 	m.nodeList = nil
@@ -73,13 +74,27 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.cancelInstall()
+	if msg.result.Fingerprint != "" {
+		m.nodeTrustFirst = false
+	}
 	if msg.result.Install != nil {
 		m.nodeInstallJob = msg.result.Install
-		m.nodeInstallParams = msg.result.Install.Params
+		if !(msg.err != nil && msg.action == "node-install-details") {
+			m.nodeInstallParams = msg.result.Install.Params
+		}
 	}
 	if msg.err != nil {
+		if msg.action == "node-install-details" {
+			m.problem = m.errorText(msg.err)
+			m.prepareNodeDetails()
+			m.screen = "nodeDetailsInput"
+			return m, m.inputs[0].Focus()
+		}
+		if msg.action == "node-install-authenticated" && m.nodeInstallParams.SSH.IdentityFile == "" {
+			msg.err = services.LocalizedError("Не удалось войти по SSH. Проверьте пароль root и разрешён ли вход root по паролю на сервере ноды. Пароль вводится скрыто; ключ от хостинга не нужен.", "SSH login failed. Check the root password and whether root password login is allowed on the node. Password input is hidden; a hosting-provider private key is not required.")
+		}
 		if msg.action == "node-install-detect-panel-ip" || msg.action == "node-install-panel-ip" {
-			m.problem = msg.err.Error()
+			m.problem = m.errorText(msg.err)
 			value := ""
 			if msg.action == "node-install-panel-ip" {
 				value = m.nodeRequest.Install.PanelIP
@@ -90,12 +105,17 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 		if strings.HasPrefix(m.nodeAction, "node-install-") {
 			m.screen = "nodeInstallResult"
 			if m.nodeInstallJob == nil && m.nodeAction == "node-install-add" {
-				m.prepareNodeInstallInputs()
-				m.screen = "nodeInstallInput"
+				if m.nodeConnectWizard {
+					m.prepareNodeConnection()
+					m.screen = "nodeConnectInput"
+				} else {
+					m.prepareNodeInstallInputs()
+					m.screen = "nodeInstallInput"
+				}
 			}
 		}
 		m.panelResult = ""
-		m.problem = msg.err.Error()
+		m.problem = m.errorText(msg.err)
 		return m, nil
 	}
 	if len(msg.result.Command) > 0 {
@@ -227,7 +247,7 @@ func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.nodeAction == "node-rename" {
 				name := strings.TrimSpace(m.inputs[0].Value())
 				if err := installer.ValidateNodeName(name); err != nil {
-					m.problem = err.Error()
+					m.problem = m.errorText(err)
 					return m, nil
 				}
 				m.nodeRequest = services.NodeRequest{Action: "node-rename", UUID: m.nodeTarget.UUID, Value: name}
@@ -241,7 +261,7 @@ func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				settings := services.NodeSSH{Host: strings.TrimSpace(m.inputs[0].Value()), Port: port, IdentityFile: strings.TrimSpace(m.inputs[2].Value())}
 				if err := installer.ValidateNodeSSH(settings); err != nil {
-					m.problem = err.Error()
+					m.problem = m.errorText(err)
 					return m, nil
 				}
 				return m.startNodeRequest(services.NodeRequest{Action: "node-ssh-prepare", UUID: m.nodeTarget.UUID, SSH: settings})
@@ -252,13 +272,25 @@ func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputs[m.focus], cmd = m.inputs[m.focus].Update(msg)
 		return m, cmd
 	case "nodesTrust":
+		if key == "tab" && m.nodeConnectWizard && m.nodeInstallJob == nil && !m.nodeSSHChanged {
+			m.nodeTrustFirst = !m.nodeTrustFirst
+			if m.nodeTrustFirst {
+				m.inputs[0].Blur()
+			} else {
+				return m, m.inputs[0].Focus()
+			}
+			return m, nil
+		}
 		if key == "enter" {
-			if strings.TrimSpace(m.inputs[0].Value()) != m.nodeFingerprint {
-				m.problem = m.l("Введите полный отпечаток, сверенный через консоль хостинга.", "Enter the full fingerprint verified through your provider's console.")
+			if !m.nodeTrustFirst && strings.TrimSpace(m.inputs[0].Value()) != m.nodeFingerprint {
+				m.problem = m.l("Введите полный SHA256-отпечаток SSH-сервера после проверки. Это не приватный ключ.", "Enter the full verified SHA256 server fingerprint. This is not a private key.")
 				return m, nil
 			}
 			if strings.HasPrefix(m.nodeAction, "node-install-") {
 				m.problem = ""
+				if m.nodeConnectWizard && m.nodeInstallJob == nil {
+					return m.startNodeRequest(services.NodeRequest{Action: "node-install-connect-create", Install: m.nodeInstallParams, Fingerprint: m.nodeFingerprint})
+				}
 				m.screen = "nodeInstallConfirm"
 				return m, nil
 			}
@@ -338,7 +370,18 @@ func (m Model) nodesView() string {
 		if m.nodeSSHChanged {
 			text += warning.Render(m.l("КЛЮЧ ИЛИ АДРЕС СЕРВЕРА ИЗМЕНИЛСЯ", "SERVER KEY OR ADDRESS HAS CHANGED")) + "\n\n"
 		}
-		return text + m.l("Сверьте отпечаток через консоль хостинга.\nВведите полный SHA256:… для подтверждения:", "Verify the fingerprint through your provider's console.\nEnter the full SHA256:… to confirm:") + "\n" + m.inputs[0].View()
+		text += m.l("Отпечаток — идентификатор SSH-сервера, не пароль и не ваш ключ.\nЕсли уже подключались к ноде из своего терминала, выполните там:\nssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub\nСравните SHA256:… с показанным выше и введите его ниже.\nПри отсутствии такого доступа можно проверить через консоль провайдера.\n", "The fingerprint identifies the SSH server; it is not a password or your private key.\nIf you already have a trusted terminal session to the node, run there:\nssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub\nCompare SHA256:… with the value above and enter it below.\nAlternatively, check it through the provider console.\n")
+		if m.nodeConnectWizard && m.nodeInstallJob == nil && !m.nodeSSHChanged {
+			choice := m.l("Сверить и ввести отпечаток", "Verify and enter fingerprint")
+			if m.nodeTrustFirst {
+				choice = m.l("Первое подключение: довериться показанному ключу", "First connection: trust the displayed key")
+			}
+			text += "\n" + accent.Render(choice) + "\n" + m.l("Нет проверенного отпечатка? Tab — первое доверие · Enter — подтвердить.\nПервое доверие сохраняет ключ без независимой проверки сервера.\nИзменение сохранённого ключа потребует проверки.\n", "No verified fingerprint? Tab — first-use trust · Enter — confirm.\nFirst-use trust saves the key without independent verification.\nChanges to the saved key require verification.\n")
+		}
+		if !m.nodeTrustFirst {
+			text += "\n" + m.inputs[0].View()
+		}
+		return text
 	case "nodesConfirm":
 		text := title + "\n\n" + m.nodeTarget.Name + " · " + m.nodeTarget.Address + "\nUUID: " + m.nodeTarget.UUID + "\n\n"
 		switch m.nodeAction {

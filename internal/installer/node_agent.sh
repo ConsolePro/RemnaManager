@@ -12,6 +12,11 @@ domain=$(decode "$RM_DOMAIN_B64")
 panel_ip=$(decode "$RM_PANEL_IP_B64")
 email=$(decode "$RM_EMAIL_B64")
 source_image=$(decode "$RM_SOURCE_B64")
+api_port=2222
+if [[ -n ${RM_API_PORT_B64:-} ]]; then api_port=$(decode "$RM_API_PORT_B64"); fi
+[[ $api_port =~ ^[0-9]+$ ]] && ((api_port>0 && api_port<=65535 && api_port!=22 && api_port!=80 && api_port!=443 && api_port!=8443)) || exit 2
+node_version=${RM_NODE_VERSION:-1}
+[[ $node_version == 1 || $node_version == 2 ]] || exit 2
 [[ $domain =~ ^[a-z0-9][a-z0-9.-]+[a-z0-9]$ && $panel_ip =~ ^[a-fA-F0-9:.]+$ ]] || exit 2
 if [[ -f $root/job-id ]]; then
     [[ $(cat "$root/job-id") == "$RM_JOB_ID" ]] || { echo 'Another installation owns this server; resume its journal.' >&2; exit 1; }
@@ -45,8 +50,8 @@ ssh_ports() {
     ports=$(/usr/sbin/sshd -T | awk '$1=="port" {print $2}')
     if [[ -n ${SSH_CONNECTION:-} ]]; then ports+=$'\n'$(awk '{print $4}' <<<"$SSH_CONNECTION"); fi
     [[ -n $ports ]] || return 1
-    for port in $ports; do [[ $port =~ ^[0-9]+$ ]] && ((port>0 && port<=65535 && port!=2222)) || return 1; done
-    sort -nu <<<"$ports" | paste -sd, -
+    for port in $ports; do [[ $port =~ ^[0-9]+$ ]] && ((port>0 && port<=65535 && port!=api_port)) || return 1; done
+    printf '%s\n22\n' "$ports" | sort -nu | paste -sd, -
 }
 check_firewall() {
     if systemctl is-active --quiet firewalld; then echo 'Migrate existing firewalld rules first.' >&2; return 1; fi
@@ -84,7 +89,7 @@ table inet $table {
   udp sport 67 udp dport 68 accept
   udp sport 547 udp dport 546 accept
   tcp dport { $ports, 80, 443 } accept
-  tcp dport 2222 $family saddr $panel_ip accept
+  tcp dport $api_port $family saddr $panel_ip accept
  }
  chain forward {
   type filter hook forward priority -10; policy drop;
@@ -101,8 +106,8 @@ table inet $table {
  chain input {
   type filter hook input priority -10; policy accept;
   iifname "lo" accept
-  tcp dport 2222 $family saddr $panel_ip accept
-  tcp dport 2222 drop
+  tcp dport $api_port $family saddr $panel_ip accept
+  tcp dport $api_port drop
  }
 }
 EOF
@@ -128,7 +133,7 @@ case $RM_STAGE in
         [[ ! -e $stack && ! -e /etc/nginx && ! -e /etc/caddy && ! -e /etc/apache2 && ! -e /etc/systemd/system/$unit.service ]] || { echo 'Existing node/proxy configuration requires migration.' >&4; exit 1; }
         command -v ss >/dev/null
         listeners=$(ss -H -ltn)
-        if awk '{print $4}' <<<"$listeners" | grep -Eq ':(80|443|8443|2222)$'; then echo 'Reserved node ports are already in use.' >&4; exit 1; fi
+        if awk '{print $4}' <<<"$listeners" | grep -Eq ":(80|443|8443|$api_port)$"; then echo 'Reserved node ports are already in use.' >&4; exit 1; fi
     fi
     check_firewall
     printf '%s\n' "$RM_JOB_ID" | write "$root/preflight-ok"
@@ -136,7 +141,8 @@ case $RM_STAGE in
 1)
     [[ -f $root/preflight-ok ]]
     arch=amd64; [[ $(uname -m) != aarch64 ]] || arch=arm64
-    decode "$RM_SETUP_B64" | bash -s -- nginx "$arch"
+    setup_proxy=nginx; [[ $node_version != 2 ]] || setup_proxy=node
+    decode "$RM_SETUP_B64" | bash -s -- "$setup_proxy" "$arch"
     if ! command -v jq >/dev/null; then apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jq; fi
     ;;
 2)
@@ -183,7 +189,10 @@ EOF
     systemctl daemon-reload; systemctl enable "$unit.service"
     web=/var/www/remnamanager-node
     install -d -m 0755 "$web" "$web/site" "$web/acme" "$web/acme/.well-known" "$web/acme/.well-known/acme-challenge"
-    if [[ ! -f $web/site/index.html ]]; then
+    if [[ $node_version == 2 ]]; then
+        [[ -n ${RM_SITE_B64:-} ]]
+        (umask 022; decode "$RM_SITE_B64" | tar -xzf - -C "$web/site" --no-same-owner --no-same-permissions)
+    elif [[ ! -f $web/site/index.html ]]; then
         cat <<'EOF' | write "$web/site/index.html" 0644
 <!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>North Studio</title><style>body{margin:0;background:#e7e0d5;color:#252828;font:18px system-ui}main{max-width:800px;margin:15vh auto;padding:32px}h1{font-size:clamp(40px,8vw,80px);letter-spacing:-.04em}p{line-height:1.7}</style><main><small>Independent creative studio</small><h1>North Studio</h1><p>Thoughtful design. Lasting impressions.</p><p>We create considered digital experiences, one detail at a time.</p></main></html>
 EOF
@@ -200,7 +209,56 @@ server {
 }
 EOF
     nginx -t; systemctl enable --now nginx; systemctl reload nginx
-    certbot certonly --webroot -w "$web/acme" -d "$domain" --email "$email" --agree-tos --non-interactive --keep-until-expiring
+    fullchain=/etc/letsencrypt/live/$domain/fullchain.pem
+    private_key=/etc/letsencrypt/live/$domain/privkey.pem
+    proxy_protocol=''
+    real_ip=''
+    if [[ $node_version == 2 ]]; then
+        acme_home=$root/acme
+        mkdir -p "$acme_home" "$root/ssl"; chmod 0700 "$acme_home" "$root/ssl"
+        if [[ ! -f $acme_home/acme.sh ]]; then
+            acme_download=$(mktemp "$acme_home/acme.XXXXXXXX")
+            curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 120 https://raw.githubusercontent.com/acmesh-official/acme.sh/807da6498377ee5e0cf43a78091f46f12dc59a89/acme.sh -o "$acme_download"
+            printf '%s  %s\n' 7b23e9b23d08aeb9c8adcbee56a6453833e9d7741f9d02696a777023c5b7184e "$acme_download" | sha256sum -c -
+            write "$acme_home/acme.sh" 0700 <"$acme_download"
+            rm -f -- "$acme_download"
+        fi
+        printf '%s  %s\n' 7b23e9b23d08aeb9c8adcbee56a6453833e9d7741f9d02696a777023c5b7184e "$acme_home/acme.sh" | sha256sum -c -
+        acme() { sh "$acme_home/acme.sh" --home "$acme_home" --config-home "$acme_home" --server letsencrypt "$@"; }
+        acme --register-account -m "$email"
+        issue_status=0
+        acme --issue --webroot "$web/acme" --keylength ec-256 -d "$domain" || issue_status=$?
+        [[ $issue_status == 0 || $issue_status == 2 ]]
+        printf '%s\n' '#!/bin/sh' 'set -eu' '/usr/sbin/nginx -t' '/bin/systemctl reload nginx' | write "$root/reload-nginx.sh" 0700
+        fullchain=$root/ssl/fullchain.pem
+        private_key=$root/ssl/privkey.pem
+        acme --install-cert --ecc -d "$domain" --fullchain-file "$fullchain" --key-file "$private_key" --reloadcmd "$root/reload-nginx.sh"
+        cat <<EOF | write /etc/systemd/system/remnamanager-node-acme.service 0644
+[Unit]
+Description=RemnaManager node certificate renewal
+After=network-online.target nginx.service
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/bin/sh $acme_home/acme.sh --cron --home $acme_home --config-home $acme_home
+EOF
+        cat <<'EOF' | write /etc/systemd/system/remnamanager-node-acme.timer 0644
+[Unit]
+Description=Daily ACME renewal check for the node
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=6h
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+        systemctl daemon-reload
+        systemctl enable --now remnamanager-node-acme.timer
+        proxy_protocol=' proxy_protocol'
+        real_ip='set_real_ip_from 127.0.0.1; real_ip_header proxy_protocol;'
+    else
+        certbot certonly --webroot -w "$web/acme" -d "$domain" --email "$email" --agree-tos --non-interactive --keep-until-expiring
+    fi
     cat <<EOF | write "$conf" 0644
 # Managed by RemnaManager node installer
 server {
@@ -209,11 +267,13 @@ server {
  location / { return 301 https://\$host\$request_uri; }
 }
 server {
- listen 127.0.0.1:8443 ssl; server_name $domain;
- ssl_certificate /etc/letsencrypt/live/$domain/fullchain.pem;
- ssl_certificate_key /etc/letsencrypt/live/$domain/privkey.pem;
+ listen 127.0.0.1:8443 ssl http2$proxy_protocol; server_name $domain;
+ $real_ip
+ ssl_certificate $fullchain;
+ ssl_certificate_key $private_key;
  ssl_protocols TLSv1.2 TLSv1.3; server_tokens off;
  root $web/site;
+ error_page 404 /404.html;
  location / { try_files \$uri \$uri/ =404; }
 }
 EOF
@@ -221,8 +281,10 @@ EOF
         if [[ -f $root/nginx.previous ]]; then write "$conf" 0644 <"$root/nginx.previous"; nginx -t && systemctl reload nginx; fi
         exit 1
     fi
-    printf '%s\n' '#!/bin/sh' 'set -eu' '/usr/sbin/nginx -t' '/bin/systemctl reload nginx' | write /etc/letsencrypt/renewal-hooks/deploy/remnamanager-node 0700
-    systemctl enable --now certbot.timer
+    if [[ $node_version == 1 ]]; then
+        printf '%s\n' '#!/bin/sh' 'set -eu' '/usr/sbin/nginx -t' '/bin/systemctl reload nginx' | write /etc/letsencrypt/renewal-hooks/deploy/remnamanager-node 0700
+        systemctl enable --now certbot.timer
+    fi
     compose up -d --wait --wait-timeout 120
     ;;
 7)

@@ -14,6 +14,7 @@ func menu() []item {
 			item{ru: "Установить панель", en: "Install panel", action: "install"},
 			operation("Доступ к панели (логин и пароль)", "Panel credentials (login and password)", "panel-credentials"),
 			operation("Защита панели", "Panel protection", "panel-protection"),
+			operation("Удалить панель и данные", "Remove panel and data", "panel-remove"),
 			operation("Обновить панель", "Update panel", "panel-update"), operation("Остановить панель", "Stop panel", "panel-stop"), operation("Логи панели", "Panel logs", "panel-logs"),
 			group("Remnawave CLI", "Remnawave CLI", operation("Статус компонентов", "Component status", "panel-status"), operation("Доступ к панели", "Panel credentials", "panel-credentials"), operation("Резервная копия БД", "Database backup", "panel-backup"), operation("Сменить API-токен", "Change API token", "panel-token"), operation("Запустить панель", "Start panel", "panel-start"), operation("CLI контейнера", "Container CLI", "panel-console")),
 			group("Страница подписки", "Subscription page", operation("Установка / запуск", "Install / start", "sub-start"), operation("Обновление", "Update", "sub-update"), operation("Кастомизация", "Customize", "sub-custom"), operation("Остановить", "Stop", "sub-stop"))),

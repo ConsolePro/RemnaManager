@@ -36,6 +36,20 @@ type stepMsg struct {
 	run, step int
 	err       error
 }
+type installActionMsg struct {
+	run, step int
+	ru, en    string
+	next      <-chan tea.Msg
+}
+type installTickMsg struct{ run int }
+
+func installTick(run int) tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return installTickMsg{run} })
+}
+func installEvent(events <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg { return <-events }
+}
+
 type frame struct {
 	items   []item
 	cursor  int
@@ -64,6 +78,7 @@ type Model struct {
 	stage, run                                         int
 	scroll                                             int
 	logs                                               []string
+	installFrame                                       int
 	proxyChoice                                        int
 	protectionChoice                                   int
 	installCtx                                         context.Context
@@ -79,6 +94,10 @@ type Model struct {
 	nodeTarget                                         services.Node
 	nodeSSH                                            services.NodeSSH
 	nodeSSHChanged                                     bool
+	nodeConnectWizard, nodeTrustFirst                  bool
+	nodeCountryCursor                                  int
+	nodeSiteCursor                                     int
+	nodeDetailsInputs                                  []textinput.Model
 	nodeInstallParams                                  services.NodeInstallParameters
 	nodeInstallJob                                     *services.NodeInstallStatus
 	nodeInstallJobs                                    []services.NodeInstallStatus
@@ -143,12 +162,24 @@ func (m *Model) back() {
 	m.problem = ""
 	m.scroll = 0
 	switch m.screen {
-	case "nodeInstallInput", "nodeInstallPending", "nodeInstallResult":
+	case "nodeConnectInput", "nodeInstallInput", "nodeInstallPending", "nodeInstallResult":
 		m.cancelInstall()
 		m.run++
 		m.screen = "menu"
 	case "nodeInstallConfirm":
-		m.screen = "nodesTrust"
+		if m.nodeConnectWizard && m.nodeInstallJob != nil && m.nodeInstallJob.DetailsPending {
+			m.prepareNodeDetails()
+			m.screen = "nodeDetailsInput"
+		} else {
+			m.screen = "nodesTrust"
+		}
+	case "nodeDetailsInput":
+		m.screen = "nodeInstallResult"
+		m.panelResult = m.l("Подключение сохранено. Продолжить можно в «Незавершённые установки».", "Connection saved. Resume from Pending installations.")
+	case "nodeCountry":
+		m.restoreNodeDetails(1)
+	case "nodeSite":
+		m.restoreNodeDetails(5)
 	case "nodeInstallProgress", "nodeInstallVerify", "nodeInstallPanelIP":
 		m.cancelInstall()
 		m.run++
@@ -177,8 +208,13 @@ func (m *Model) back() {
 			if m.nodeInstallJob != nil {
 				m.screen = "nodeInstallPending"
 			} else {
-				m.prepareNodeInstallInputs()
-				m.screen = "nodeInstallInput"
+				if m.nodeConnectWizard {
+					m.prepareNodeConnection()
+					m.screen = "nodeConnectInput"
+				} else {
+					m.prepareNodeInstallInputs()
+					m.screen = "nodeInstallInput"
+				}
 			}
 		} else {
 			m.prepareNodeSSHInputs()
@@ -266,7 +302,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case confirmedInstallMsg:
 		m.saving = false
 		if msg.err != nil {
-			m.problem = msg.err.Error()
+			m.problem = m.errorText(msg.err)
 		} else {
 			m.screen = "installResult"
 			m.problem = ""
@@ -298,7 +334,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case savedMsg:
 		m.saving = false
 		if msg.err != nil {
-			m.problem = msg.err.Error()
+			m.problem = m.errorText(msg.err)
 		} else {
 			m.cfg = msg.cfg
 			m.screen = "menu"
@@ -311,24 +347,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.checking = false
 		m.environment = msg.info
 		if msg.err != nil {
-			m.problem = msg.err.Error()
+			m.problem = m.errorText(msg.err)
 		} else if s, ok := m.liveInstaller(); ok && s.Installed() {
 			m.screen = "installResult"
 		}
+	case installTickMsg:
+		if msg.run == m.run && m.screen == "progress" && m.problem == "" && m.stage < len(m.service.Stages()) {
+			m.installFrame++
+			return m, installTick(m.run)
+		}
+	case installActionMsg:
+		if msg.run != m.run || msg.step != m.stage || m.screen != "progress" {
+			return m, nil
+		}
+		m.logs = append(m.logs, m.l(msg.ru, msg.en))
+		if len(m.logs) > 8 {
+			m.logs = m.logs[len(m.logs)-8:]
+		}
+		return m, installEvent(msg.next)
 	case stepMsg:
 		if msg.run != m.run || m.screen != "progress" {
 			return m, nil
 		}
 		if msg.err != nil {
-			m.problem = msg.err.Error()
+			m.problem = m.errorText(msg.err)
 			return m, nil
 		}
-		label := m.service.Stages()[msg.step]
-		prefix := m.l("Демо: ", "Demo: ")
-		if m.liveInstall() {
-			prefix = "✓ "
-		}
-		m.logs = append(m.logs, prefix+m.l(label[0], label[1]))
 		m.stage = msg.step + 1
 		if m.stage == len(m.service.Stages()) {
 			m.scroll = 0
@@ -337,6 +381,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if m.stage < len(m.service.Stages()) {
+			m.logs = nil
 			return m, m.nextStep()
 		}
 	case tea.KeyMsg:
@@ -421,7 +466,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.screen = "notice"
 				}
 			}
-		case "nodeInstallInput", "nodeInstallConfirm", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult", "nodeInstallPanelIP":
+		case "nodeConnectInput", "nodeDetailsInput", "nodeCountry", "nodeSite", "nodeInstallInput", "nodeInstallConfirm", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult", "nodeInstallPanelIP":
 			return m.updateNodeInstallScreen(msg)
 		case "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesResult":
 			return m.updateNodeScreen(msg)
@@ -476,7 +521,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				p := m.parameters()
 				if m.liveInstall() {
 					if err := installer.ValidateParameters(p); err != nil {
-						m.problem = err.Error()
+						m.problem = m.errorText(err)
 						break
 					}
 				}
@@ -493,9 +538,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.installCtx, m.installCancel = context.WithCancel(m.ctx)
 				m.stage = 0
 				m.logs = nil
+				m.installFrame = 0
 				m.screen = "progress"
 				m.run++
-				return m, m.nextStep()
+				return m, tea.Batch(m.nextStep(), installTick(m.run))
 			}
 		case "progress":
 			if key == "enter" && (m.stage == len(m.service.Stages()) || m.problem != "") {
@@ -533,7 +579,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	if m.screen == "email" || m.screen == "domains" || m.screen == "panelInput" || m.screen == "nodesInput" || m.screen == "nodesTrust" || m.screen == "nodeInstallInput" || m.screen == "nodeInstallPanelIP" {
+	if m.screen == "email" || m.screen == "domains" || m.screen == "panelInput" || m.screen == "nodesInput" || m.screen == "nodesTrust" || m.screen == "nodeInstallInput" || m.screen == "nodeInstallPanelIP" || m.screen == "nodeConnectInput" || m.screen == "nodeDetailsInput" || m.screen == "nodeCountry" {
 		var cmd tea.Cmd
 		m.inputs[m.focus], cmd = m.inputs[m.focus].Update(msg)
 		return m, cmd
@@ -553,9 +599,23 @@ func (m Model) nextStep() tea.Cmd {
 		ctx = m.ctx
 	}
 	return func() tea.Msg {
-		c, cancel := context.WithTimeout(ctx, 20*time.Minute)
-		defer cancel()
-		return stepMsg{run, step, m.service.Step(c, step, p)}
+		events := make(chan tea.Msg, 16)
+		go func() {
+			c, cancel := context.WithTimeout(ctx, 20*time.Minute)
+			defer cancel()
+			c = services.WithProgress(c, func(ru, en string) {
+				select {
+				case events <- installActionMsg{run, step, ru, en, events}:
+				case <-c.Done():
+				}
+			})
+			err := m.service.Step(c, step, p)
+			select {
+			case events <- stepMsg{run, step, err}:
+			case <-ctx.Done():
+			}
+		}()
+		return <-events
 	}
 }
 

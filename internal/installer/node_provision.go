@@ -10,7 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,10 +30,12 @@ var nodeAgent []byte
 
 type NodeJob struct {
 	Version                                                 int
+	DetailsPending                                          bool
 	ID                                                      string
 	Params                                                  services.NodeInstallParameters
 	Email                                                   string
 	Secret, RealityKey, ShortID, Image                      string
+	ShortIDs                                                []string
 	ProfileUUID, InboundUUID, NodeUUID, HostUUID, SquadUUID string
 	Completed                                               map[int]bool
 	CreatedAt, UpdatedAt                                    time.Time
@@ -42,6 +47,22 @@ type NodeJob struct {
 }
 
 func NodeInstallStages() [][2]string {
+	return NodeInstallStagesForVersion(2)
+}
+func NodeInstallStagesForVersion(version int) [][2]string {
+	if version != 1 {
+		return [][2]string{
+			{"Проверка сервера и DNS", "Server and DNS checks"},
+			{"Профиль Reality и регистрация ноды", "Reality profile and node registration"},
+			{"Docker, Nginx и зависимости", "Docker, Nginx and dependencies"},
+			{"SECRET_KEY и закрепление образа", "SECRET_KEY and pinned image"},
+			{"Сайт selfsteal, ACME и запуск ноды", "Selfsteal website, ACME and node startup"},
+			{"Хост Firefox и internal squad", "Firefox host and internal squad"},
+			{"Проверка подключения к панели", "Panel connectivity check"},
+			{"Firewall с таймером отката", "Firewall with rollback timer"},
+			{"Подтверждение SSH-доступа", "SSH access confirmation"},
+		}
+	}
 	return [][2]string{
 		{"Проверка отдельного сервера и DNS", "Remote server and DNS checks"},
 		{"Docker, Nginx и зависимости", "Docker, Nginx and dependencies"},
@@ -54,6 +75,12 @@ func NodeInstallStages() [][2]string {
 		{"Подтверждение доступа по SSH", "SSH access confirmation"},
 	}
 }
+func nodeStageID(j NodeJob, stage int) int {
+	if j.Version >= 2 && stage >= 0 && stage < 9 {
+		return []int{0, 4, 1, 2, 3, 5, 6, 7, 8}[stage]
+	}
+	return stage
+}
 
 func ValidateNodeInstall(p services.NodeInstallParameters) error {
 	if err := ValidateNodeName(p.Name); err != nil {
@@ -62,20 +89,23 @@ func ValidateNodeInstall(p services.NodeInstallParameters) error {
 	if err := ValidateNodeSSH(p.SSH); err != nil {
 		return err
 	}
-	if p.SSH.Port == 2222 || p.SSH.Port == 80 || p.SSH.Port == 443 || p.SSH.Port == 8443 {
-		return errors.New("SSH port conflicts with node services")
+	if err := validateNodeDetails(p); err != nil {
+		return err
+	}
+	if p.SSH.Port == 80 || p.SSH.Port == 443 || p.SSH.Port == 8443 {
+		return services.LocalizedError("SSH-порт конфликтует с портами сервисов ноды. Выберите другой SSH-порт.", "SSH port conflicts with node services")
 	}
 	if net.ParseIP(p.Address) == nil && !ValidDomain(p.Address) {
-		return errors.New("node address must be an IP address or DNS name")
+		return services.LocalizedError("Адрес ноды должен быть IP-адресом или доменным именем.", "node address must be an IP address or DNS name")
 	}
 	if ip := net.ParseIP(p.Address); ip != nil && !ip.IsGlobalUnicast() {
-		return errors.New("node address must be unicast")
+		return services.LocalizedError("Укажите индивидуальный IP-адрес сервера ноды, а не широковещательный или групповой адрес.", "node address must be unicast")
 	}
 	if !ValidDomain(p.Domain) || net.ParseIP(p.Domain) != nil {
-		return errors.New("selfsteal requires a DNS domain")
+		return services.LocalizedError("Для selfsteal нужен домен, например cover.example.com, а не IP-адрес.", "selfsteal requires a DNS domain")
 	}
 	if ip := net.ParseIP(p.PanelIP); p.PanelIP != "" && (ip == nil || !ip.IsGlobalUnicast()) {
-		return errors.New("specify the panel's reachable unicast IP for the node API firewall")
+		return services.LocalizedError("Укажите IP-адрес панели, доступный с ноды, или оставьте поле пустым для автоматического определения по SSH.", "specify the panel's reachable unicast IP for the node API firewall")
 	}
 	return nil
 }
@@ -118,7 +148,7 @@ func (r *Real) loadNodeJob(id string) (NodeJob, error) {
 	if err = json.Unmarshal(data, &j); err != nil {
 		return j, err
 	}
-	if j.ID != id || j.Version != 1 || j.Completed == nil || j.RealityKey == "" || len(j.ShortID) != 16 {
+	if j.ID != id || (j.Version != 1 && j.Version != 2) || j.Completed == nil || j.RealityKey == "" || len(j.ShortID) != 16 {
 		return j, errors.New("invalid installation journal; refusing to regenerate keys")
 	}
 	key, keyErr := base64.RawURLEncoding.DecodeString(j.RealityKey)
@@ -138,19 +168,37 @@ func (r *Real) loadNodeJob(id string) (NodeJob, error) {
 	if j.Ready && (!j.Completed[8] || j.FirewallPending) {
 		return j, errors.New("inconsistent completed installation journal")
 	}
-	if j.Completed[2] && (j.Secret == "" || j.Image == "") {
+	secretStage := 2
+	if j.Version >= 2 {
+		secretStage = 3
+	}
+	if j.Completed[secretStage] && (j.Secret == "" || j.Image == "") {
 		return j, errors.New("completed key/image stage has lost its secrets or pinned image")
 	}
 	if j.Completed[0] && j.Params.PanelIP == "" {
 		return j, errors.New("started installation has lost its confirmed panel IP")
 	}
-	if err = ValidateNodeInstall(j.Params); err != nil {
+	if j.Version >= 2 && (len(j.ShortIDs) < 3 || len(j.ShortIDs) > 6) {
+		return j, errors.New("invalid saved Reality short IDs")
+	}
+	for _, value := range j.ShortIDs {
+		decoded, err := hex.DecodeString(value)
+		if err != nil || len(decoded) != 8 {
+			return j, errors.New("invalid saved Reality short ID")
+		}
+	}
+	if j.DetailsPending {
+		err = ValidateNodeSSH(j.Params.SSH)
+	} else {
+		err = ValidateNodeInstall(j.Params)
+	}
+	if err != nil {
 		return j, err
 	}
 	return j, nil
 }
 func jobStatus(j NodeJob) services.NodeInstallStatus {
-	completed := make([]bool, len(NodeInstallStages()))
+	completed := make([]bool, len(NodeInstallStagesForVersion(j.Version)))
 	stage := len(completed)
 	for i := range completed {
 		completed[i] = j.Completed[i]
@@ -160,7 +208,7 @@ func jobStatus(j NodeJob) services.NodeInstallStatus {
 	}
 	p := j.Params
 	p.SSH.HostKey = ""
-	return services.NodeInstallStatus{ID: j.ID, Params: p, Stage: stage, Completed: completed, NodeUUID: j.NodeUUID, Ready: j.Ready, FirewallPending: j.FirewallPending, LastError: j.LastError, RollbackAt: j.RollbackAt}
+	return services.NodeInstallStatus{Version: j.Version, DetailsPending: j.DetailsPending, ID: j.ID, Params: p, Stage: stage, Completed: completed, NodeUUID: j.NodeUUID, Ready: j.Ready, FirewallPending: j.FirewallPending, LastError: j.LastError, RollbackAt: j.RollbackAt}
 }
 func (r *Real) pendingNodeJobs() ([]services.NodeInstallStatus, error) {
 	entries, err := os.ReadDir(filepath.Join(r.Root, "node-jobs"))
@@ -189,6 +237,8 @@ func (r *Real) pendingNodeJobs() ([]services.NodeInstallStatus, error) {
 func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) (services.NodeResult, error) {
 	var result services.NodeResult
 	switch request.Action {
+	case "node-install-connect-scan":
+		return r.prepareNodeSSH(ctx, "", request.Install.SSH)
 	case "node-install-pending":
 		jobs, err := r.pendingNodeJobs()
 		result.Jobs = jobs
@@ -202,10 +252,20 @@ func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) 
 			return result, errors.New("node and panel require different domains")
 		}
 		return r.prepareNodeSSH(ctx, "", p.SSH)
-	case "node-install-create":
+	case "node-install-create", "node-install-connect-create":
 		p := request.Install
-		if err := ValidateNodeInstall(p); err != nil {
-			return result, err
+		connect := request.Action == "node-install-connect-create"
+		if connect {
+			p.Name, p.Domain, p.Address = "New_node", "pending.invalid", p.SSH.Host
+		}
+		var validation error
+		if connect {
+			validation = ValidateNodeSSH(p.SSH)
+		} else {
+			validation = ValidateNodeInstall(p)
+		}
+		if validation != nil {
+			return result, validation
 		}
 		if p.PanelIP != "" {
 			p.PanelIP = net.ParseIP(p.PanelIP).String()
@@ -236,7 +296,10 @@ func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) 
 				return result, fmt.Errorf("resume the existing installation %s instead of creating another", job.ID)
 			}
 		}
-		nodes, err := r.nodeObjects(ctx, "/nodes", "nodes")
+		var nodes []map[string]json.RawMessage
+		if !connect {
+			nodes, err = r.nodeObjects(ctx, "/nodes", "nodes")
+		}
 		if err != nil {
 			return result, err
 		}
@@ -257,7 +320,10 @@ func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) 
 		if err != nil {
 			return result, err
 		}
-		j := NodeJob{Version: 1, ID: id[:32], Params: p, Email: r.state.Params.Email, RealityKey: base64.RawURLEncoding.EncodeToString(curve.Bytes()), ShortID: short[:16], Completed: map[int]bool{}, CreatedAt: time.Now().UTC()}
+		j := NodeJob{Version: 2, DetailsPending: connect, ID: id[:32], Params: p, Email: r.state.Params.Email, RealityKey: base64.RawURLEncoding.EncodeToString(curve.Bytes()), ShortID: short[:16], Completed: map[int]bool{}, CreatedAt: time.Now().UTC()}
+		if err := prepareNewNodeSettings(&j); err != nil {
+			return result, err
+		}
 		if err = r.saveNodeJob(&j); err != nil {
 			return result, err
 		}
@@ -272,7 +338,74 @@ func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) 
 	status := jobStatus(j)
 	result.Install = &status
 	switch request.Action {
+	case "node-install-details":
+		if !j.DetailsPending || len(j.Completed) != 0 {
+			return result, services.LocalizedError("Параметры уже сохранены. Продолжите установку через «Незавершённые установки».", "Node details are already saved. Resume from Pending installations.")
+		}
+		if j.Params.SSH.IdentityFile == "" {
+			return result, services.LocalizedError("Сначала войдите по SSH от root и настройте ключ менеджера.", "Authenticate as root over SSH and set up the managed key first.")
+		}
+		p := request.Install
+		p.Address, p.SSH = j.Params.Address, j.Params.SSH
+		p.CountryCode = strings.ToUpper(p.CountryCode)
+		if err := ValidateNodeInstall(p); err != nil {
+			return result, err
+		}
+		if p.Domain == r.state.Params.PanelDomain || p.Domain == r.state.Params.SubscriptionDomain || p.Domain == r.state.Params.AuthDomain {
+			return result, services.LocalizedError("Для ноды нужен отдельный домен.", "Use a separate node domain.")
+		}
+		serverIPs, err := r.nodeInterfaceIPs(ctx, j)
+		if err != nil {
+			return result, err
+		}
+		if err := r.checkNodeDNS(ctx, p, serverIPs...); err != nil {
+			return result, err
+		}
+		nodes, err := r.nodeObjects(ctx, "/nodes", "nodes")
+		if err != nil {
+			return result, err
+		}
+		for _, node := range nodes {
+			if rawString(node["name"]) == p.Name || rawString(node["address"]) == p.Address {
+				return result, services.LocalizedError("Нода с этим именем или адресом уже существует в панели.", "A node with this name or address already exists.")
+			}
+		}
+		j.Params, j.DetailsPending = p, false
+		if err := prepareNewNodeSettings(&j); err != nil {
+			return result, err
+		}
+		profiles, err := r.nodeObjects(ctx, "/config-profiles", "configProfiles", "profiles")
+		if err != nil {
+			return result, err
+		}
+		for _, profile := range profiles {
+			if rawString(profile["name"]) == j.Params.ProfileName {
+				return result, services.LocalizedError("Профиль с таким названием уже существует. Укажите другое имя профиля.", "A profile with this name already exists. Choose a different profile name.")
+			}
+		}
+		if err := r.saveNodeJob(&j); err != nil {
+			return result, err
+		}
+		status = jobStatus(j)
+		result.Install = &status
+		return result, nil
 	case "node-install-load":
+		return result, nil
+	case "node-install-key":
+		if err := r.installNodeManagedKey(ctx, &j); err != nil {
+			return result, err
+		}
+		if j.NodeUUID != "" {
+			if r.state.NodeSSH == nil {
+				r.state.NodeSSH = map[string]services.NodeSSH{}
+			}
+			r.state.NodeSSH[j.NodeUUID] = j.Params.SSH
+			if err := saveState(statePath(r.Root), r.state); err != nil {
+				return result, err
+			}
+		}
+		status = jobStatus(j)
+		result.Install = &status
 		return result, nil
 	case "node-install-detect-panel-ip":
 		args, e := r.provisionSSHArgs(j, true)
@@ -329,6 +462,11 @@ func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) 
 		if e != nil {
 			return result, e
 		}
+		if j.Params.SSH.IdentityFile == "" {
+			args = append(args, "-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password,keyboard-interactive", "-o", "PasswordAuthentication=yes", "-o", "KbdInteractiveAuthentication=yes")
+		} else {
+			args = append(args, "-o", "PreferredAuthentications=publickey", "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no")
+		}
 		args = append(args, "-M", "-N", "-f", "-o", "ControlPersist=120", "-S", r.nodeControl(j.ID), "root@"+j.Params.SSH.Host)
 		result.Command = append([]string{"ssh"}, args...)
 		if r.controls == nil {
@@ -365,6 +503,11 @@ func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) 
 	status = jobStatus(j)
 	result.Install = &status
 	if err != nil {
+		if j.Version >= 2 && request.Action == "node-install-step" {
+			label := NodeInstallStagesForVersion(j.Version)[request.Stage]
+			message := services.LocalizedError(fmt.Sprintf("Этап «%s» не завершён. Откройте «Незавершённые установки» для продолжения. Журнал на ноде: /var/lib/remnamanager-node/install.log. Установка: %s", label[0], j.ID), fmt.Sprintf("Stage %s failed. Resume from Pending installations. Node log: /var/lib/remnamanager-node/install.log. Installation: %s", label[1], j.ID))
+			return result, fmt.Errorf("%w: %w", message, err)
+		}
 		return result, fmt.Errorf("%w; installation %s is saved for resume", err, j.ID)
 	}
 	return result, saveErr
@@ -416,11 +559,19 @@ func (r *Real) runNodeAgent(ctx context.Context, j NodeJob, stage int) ([]byte, 
 		return nil, err
 	}
 	values := map[string]string{"DOMAIN": j.Params.Domain, "PANEL_IP": j.Params.PanelIP, "EMAIL": j.Email, "COMPOSE": string(compose), "SETUP": string(setupScript), "SOURCE": j.Image}
+	if j.Version >= 2 {
+		site, err := nodeWebsiteArchive(j.Params.SiteTemplate)
+		if err != nil {
+			return nil, err
+		}
+		values["SITE"] = string(site)
+	}
+	values["API_PORT"] = strconv.Itoa(nodeAPIPort(j.Params))
 	if values["SOURCE"] == "" {
 		values["SOURCE"] = "remnawave/node:latest"
 	}
 	var input strings.Builder
-	fmt.Fprintf(&input, "set +x\nRM_JOB_ID='%s'\nRM_STAGE='%d'\n", j.ID, stage)
+	fmt.Fprintf(&input, "set +x\nRM_JOB_ID='%s'\nRM_STAGE='%d'\nRM_NODE_VERSION='%d'\n", j.ID, stage, j.Version)
 	for name, value := range values {
 		fmt.Fprintf(&input, "RM_%s_B64='%s'\n", name, base64.StdEncoding.EncodeToString([]byte(value)))
 	}
@@ -446,9 +597,12 @@ func RenderNodeStack(j NodeJob) ([]byte, error) {
 	if image == "" {
 		image = "remnawave/node:latest"
 	}
-	return json.MarshalIndent(map[string]any{"name": "remnamanager-node", "services": map[string]any{"remnanode": map[string]any{"image": image, "restart": "unless-stopped", "network_mode": "host", "environment": map[string]string{"NODE_PORT": "2222", "SECRET_KEY": j.Secret}, "logging": map[string]any{"driver": "json-file", "options": map[string]string{"max-size": "10m", "max-file": "3"}}}}}, "", "  ")
+	return json.MarshalIndent(map[string]any{"name": "remnamanager-node", "services": map[string]any{"remnanode": map[string]any{"image": image, "restart": "unless-stopped", "network_mode": "host", "environment": map[string]string{"NODE_PORT": strconv.Itoa(nodeAPIPort(j.Params)), "SECRET_KEY": j.Secret}, "logging": map[string]any{"driver": "json-file", "options": map[string]string{"max-size": "10m", "max-file": "3"}}}}}, "", "  ")
 }
 func (r *Real) runNodeStage(ctx context.Context, j *NodeJob, stage int) error {
+	if j.DetailsPending {
+		return services.LocalizedError("Сначала заполните параметры ноды после входа по SSH.", "Complete node details after SSH login first.")
+	}
 	if ip := net.ParseIP(j.Params.PanelIP); ip == nil || !ip.IsGlobalUnicast() {
 		return errors.New("confirm the panel IP before starting installation")
 	}
@@ -461,9 +615,10 @@ func (r *Real) runNodeStage(ctx context.Context, j *NodeJob, stage int) error {
 	if stage > 0 && !j.Completed[stage-1] {
 		return errors.New("complete the previous installation stage first")
 	}
-	switch stage {
+	actionStage := nodeStageID(*j, stage)
+	switch actionStage {
 	case 0, 1, 3:
-		if _, err := r.runNodeAgent(ctx, *j, stage); err != nil {
+		if _, err := r.runNodeAgent(ctx, *j, actionStage); err != nil {
 			return err
 		}
 	case 2:
@@ -499,6 +654,11 @@ func (r *Real) runNodeStage(ctx context.Context, j *NodeJob, stage int) error {
 		if err := r.ensureNodeProfile(ctx, j); err != nil {
 			return err
 		}
+		if j.Version >= 2 {
+			if err := r.ensureNodeRegistration(ctx, j); err != nil {
+				return err
+			}
+		}
 	case 5:
 		if err := r.ensureNodeObjects(ctx, j); err != nil {
 			return err
@@ -506,6 +666,11 @@ func (r *Real) runNodeStage(ctx context.Context, j *NodeJob, stage int) error {
 	case 6:
 		if err := r.waitInstalledNode(ctx, *j); err != nil {
 			return err
+		}
+		if j.Version >= 2 {
+			if err := r.waitNodeWebsite(ctx, *j); err != nil {
+				return err
+			}
 		}
 		if r.state.NodeSSH == nil {
 			r.state.NodeSSH = map[string]services.NodeSSH{}
@@ -569,7 +734,10 @@ func (r *Real) confirmNodeInstall(ctx context.Context, j *NodeJob) error {
 		return nil
 	}
 	if !j.Completed[7] || !j.FirewallPending {
-		return errors.New("run the firewall trial before confirming SSH access")
+		return services.LocalizedError("Сначала выполните пробное применение firewall через продолжение установки ноды.", "Run the firewall trial before confirming SSH access.")
+	}
+	if !j.RollbackAt.IsZero() && time.Until(j.RollbackAt) < 10*time.Second {
+		return services.LocalizedError("Время подтверждения SSH истекло. Правила откатываются автоматически. Продолжите эту ноду через «Незавершённые установки», чтобы запустить новую проверку.", "SSH confirmation expired. Rules roll back automatically. Resume this node from Pending installations to start a new trial.")
 	}
 	if err := r.waitInstalledNode(ctx, *j); err != nil {
 		return err
@@ -606,6 +774,50 @@ func (r *Real) waitInstalledNode(ctx context.Context, j NodeJob) error {
 	}
 }
 
+func (r *Real) waitNodeWebsite(ctx context.Context, j NodeJob) error {
+	wait, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	client := http.Client{Timeout: 10 * time.Second, Transport: r.Client.Transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	check := func() error {
+		for _, scheme := range []string{"https", "http"} {
+			request, err := http.NewRequestWithContext(wait, "GET", scheme+"://"+j.Params.Domain+"/", nil)
+			if err != nil {
+				return err
+			}
+			response, err := client.Do(request)
+			if err != nil {
+				return err
+			}
+			body, readErr := io.ReadAll(io.LimitReader(response.Body, 4096))
+			response.Body.Close()
+			if readErr != nil {
+				return readErr
+			}
+			if scheme == "https" {
+				if response.StatusCode != 200 || !strings.Contains(strings.ToLower(string(body)), "<html") {
+					return errors.New("HTTPS did not return the prepared website")
+				}
+			} else {
+				location, err := url.Parse(response.Header.Get("Location"))
+				if err != nil || location.Scheme != "https" || location.Hostname() != j.Params.Domain || (response.StatusCode != 301 && response.StatusCode != 308) {
+					return errors.New("HTTP port 80 does not redirect to the HTTPS website")
+				}
+			}
+		}
+		return nil
+	}
+	for {
+		if err := check(); err == nil {
+			return nil
+		}
+		select {
+		case <-wait.Done():
+			return services.LocalizedError("Сайт selfsteal недоступен по HTTP/HTTPS или сертификат не прошёл проверку. Проверьте A/AAAA домена, порты 80/443 и журнал Nginx на ноде. Установка сохранена для продолжения.", "Selfsteal HTTP/HTTPS or certificate verification failed. Check domain A/AAAA records, ports 80/443 and node Nginx logs. Installation is saved for resume.")
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 func rawString(raw json.RawMessage) string { var s string; json.Unmarshal(raw, &s); return s }
 func (r *Real) nodeObjects(ctx context.Context, path string, keys ...string) ([]map[string]json.RawMessage, error) {
 	raw, err := r.nodeAPI(ctx, "GET", path, nil)
@@ -631,6 +843,9 @@ func (r *Real) nodeObjects(ctx context.Context, path string, keys ...string) ([]
 	return nil, errors.New("API collection shape changed; refusing to create duplicate resources")
 }
 func nodeRealityConfig(j NodeJob) map[string]any {
+	if j.Version >= 2 {
+		return preparedRealityConfig(j)
+	}
 	return map[string]any{
 		"log":       map[string]string{"loglevel": "warning"},
 		"inbounds":  []any{map[string]any{"tag": "RM_REALITY_" + j.ID[:12], "listen": "0.0.0.0", "port": 443, "protocol": "vless", "settings": map[string]any{"clients": []any{}, "decryption": "none"}, "streamSettings": map[string]any{"network": "raw", "security": "reality", "realitySettings": map[string]any{"show": false, "target": "127.0.0.1:8443", "xver": 0, "serverNames": []string{j.Params.Domain}, "privateKey": j.RealityKey, "shortIds": []string{j.ShortID}}}}},
@@ -667,7 +882,7 @@ func uuidInList(raw json.RawMessage, id string) bool {
 	return false
 }
 func (r *Real) ensureNodeProfile(ctx context.Context, j *NodeJob) error {
-	name := "RM_" + j.ID[:16]
+	name := nodeProfileName(*j)
 	if j.ProfileUUID == "" {
 		profiles, err := r.nodeObjects(ctx, "/config-profiles", "configProfiles", "profiles")
 		if err != nil {
@@ -726,7 +941,7 @@ func (r *Real) ensureNodeProfile(ctx context.Context, j *NodeJob) error {
 		return err
 	}
 	for _, inbound := range inbounds {
-		if rawString(inbound["tag"]) == "RM_REALITY_"+j.ID[:12] {
+		if rawString(inbound["tag"]) == nodeInboundTag(*j) {
 			id := rawString(inbound["uuid"])
 			if !nodeUUIDPattern.MatchString(id) {
 				return errors.New("invalid inbound UUID")
@@ -741,6 +956,12 @@ func (r *Real) ensureNodeProfile(ctx context.Context, j *NodeJob) error {
 	return errors.New("Reality inbound was not returned by the panel")
 }
 func (r *Real) ensureNodeObjects(ctx context.Context, j *NodeJob) error {
+	if err := r.ensureNodeRegistration(ctx, j); err != nil {
+		return err
+	}
+	return r.ensureNodeHostAndSquad(ctx, j)
+}
+func (r *Real) ensureNodeRegistration(ctx context.Context, j *NodeJob) error {
 	if !nodeUUIDPattern.MatchString(j.ProfileUUID) || !nodeUUIDPattern.MatchString(j.InboundUUID) {
 		return errors.New("create the Reality profile first")
 	}
@@ -757,7 +978,7 @@ func (r *Real) ensureNodeObjects(ctx context.Context, j *NodeJob) error {
 			json.Unmarshal(node["configProfile"], &config)
 			var port int
 			json.Unmarshal(node["port"], &port)
-			if rawString(node["address"]) != j.Params.Address || config.Profile != j.ProfileUUID || port != 2222 {
+			if rawString(node["address"]) != j.Params.Address || config.Profile != j.ProfileUUID || port != nodeAPIPort(j.Params) {
 				return errors.New("node name or saved node is owned by another configuration")
 			}
 			j.NodeUUID = rawString(node["uuid"])
@@ -769,7 +990,11 @@ func (r *Real) ensureNodeObjects(ctx context.Context, j *NodeJob) error {
 		return errors.New("saved node was deleted externally; refusing to register a replacement")
 	}
 	if j.NodeUUID == "" {
-		raw, e := r.nodeAPI(ctx, "POST", "/nodes", map[string]any{"name": j.Params.Name, "address": j.Params.Address, "port": 2222, "configProfile": map[string]any{"activeConfigProfileUuid": j.ProfileUUID, "activeInbounds": []string{j.InboundUUID}}})
+		country := j.Params.CountryCode
+		if country == "" {
+			country = "XX"
+		}
+		raw, e := r.nodeAPI(ctx, "POST", "/nodes", map[string]any{"name": j.Params.Name, "address": j.Params.Address, "port": nodeAPIPort(j.Params), "countryCode": country, "configProfile": map[string]any{"activeConfigProfileUuid": j.ProfileUUID, "activeInbounds": []string{j.InboundUUID}}})
 		if e != nil {
 			return e
 		}
@@ -781,6 +1006,9 @@ func (r *Real) ensureNodeObjects(ctx context.Context, j *NodeJob) error {
 			return err
 		}
 	}
+	return nil
+}
+func (r *Real) ensureNodeHostAndSquad(ctx context.Context, j *NodeJob) error {
 	hosts, err := r.nodeObjects(ctx, "/hosts", "hosts")
 	if err != nil {
 		return err
@@ -811,7 +1039,11 @@ func (r *Real) ensureNodeObjects(ctx context.Context, j *NodeJob) error {
 		return errors.New("saved subscription host was deleted externally")
 	}
 	if j.HostUUID == "" {
-		raw, e := r.nodeAPI(ctx, "POST", "/hosts", map[string]any{"remark": j.Params.Name, "address": j.Params.Address, "port": 443, "sni": j.Params.Domain, "fingerprint": "chrome", "nodes": []string{j.NodeUUID}, "inbound": map[string]string{"configProfileUuid": j.ProfileUUID, "configProfileInboundUuid": j.InboundUUID}})
+		fingerprint := "chrome"
+		if j.Version >= 2 {
+			fingerprint = "firefox"
+		}
+		raw, e := r.nodeAPI(ctx, "POST", "/hosts", map[string]any{"remark": j.Params.Name, "address": j.Params.Address, "port": 443, "sni": j.Params.Domain, "fingerprint": fingerprint, "nodes": []string{j.NodeUUID}, "inbound": map[string]string{"configProfileUuid": j.ProfileUUID, "configProfileInboundUuid": j.InboundUUID}})
 		if e != nil {
 			return e
 		}

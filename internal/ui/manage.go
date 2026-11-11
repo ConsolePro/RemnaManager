@@ -33,6 +33,11 @@ func (m Model) openPanelOperation(selected item) (tea.Model, tea.Cmd) {
 	m.panelRequest = services.PanelRequest{Action: selected.action}
 	m.panelTitle = m.l(selected.ru, selected.en)
 	switch selected.action {
+	case "panel-remove":
+		m.screen = "panelInput"
+		m.inputs = []textinput.Model{newInput("DELETE", "")}
+		m.focus = 0
+		return m, m.inputs[0].Focus()
 	case "panel-protection":
 		m.screen = "panelProtection"
 		m.protectionChoice = 0
@@ -104,7 +109,7 @@ func (m Model) receivePanelResult(msg panelResultMsg) (tea.Model, tea.Cmd) {
 		m.panelResult = msg.result.TextRU
 	}
 	if msg.err != nil {
-		m.problem = msg.err.Error()
+		m.problem = m.errorText(msg.err)
 	} else {
 		m.problem = ""
 	}
@@ -157,6 +162,10 @@ func (m Model) updatePanelScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			value := strings.TrimSpace(m.inputs[0].Value())
 			var err error
 			switch m.panelRequest.Action {
+			case "panel-remove":
+				if value != "DELETE" {
+					err = fmt.Errorf("%s", m.l("Для удаления введите DELETE", "Type DELETE to confirm removal"))
+				}
 			case "panel-protection":
 				value = strings.ToLower(value)
 				if !installer.ValidDomain(value) {
@@ -172,7 +181,7 @@ func (m Model) updatePanelScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			if err != nil {
-				m.problem = err.Error()
+				m.problem = m.errorText(err)
 				return m, nil
 			}
 			m.problem = ""
@@ -216,6 +225,9 @@ func (m Model) panelScreenView() string {
 		return strings.Join(rows, "\n")
 	case "panelInput":
 		label := m.l("Версия backend (стабильный тег):", "Backend version (stable tag):")
+		if m.panelRequest.Action == "panel-remove" {
+			label = m.l("Будут безвозвратно удалены панель, подписка, БД и данные TinyAuth/MFA.\nРезервную копию можно сделать в Remnawave CLI → Резервная копия БД.\nДля продолжения введите DELETE:", "Panel, subscription, database and TinyAuth/MFA data will be permanently deleted.\nYou can create a backup in Remnawave CLI → Database backup.\nType DELETE to continue:")
+		}
 		if m.panelRequest.Action == "panel-token" {
 			label = m.l("Новый токен управления (ввод скрыт):", "New manager token (hidden input):")
 		}
@@ -237,6 +249,8 @@ func (m Model) panelScreenView() string {
 		}
 		description := m.l("Операция изменит компоненты управляемого стека.", "This operation changes components in the managed stack.")
 		switch m.panelRequest.Action {
+		case "panel-remove":
+			description = m.l("Безвозвратно удалить панель, подписку, БД и данные TinyAuth/MFA?\nБудут удалены настройки прокси и firewall этой панели.\nУдаление правил firewall может открыть другие порты сервера.\nРезервные копии, сертификаты, пакеты, менеджер и удалённые ноды сохранятся.\nПосле удаления можно заново установить панель.", "Permanently remove panel, subscription, database and TinyAuth/MFA data?\nThis panel's proxy configuration and firewall rules will be removed.\nRemoving firewall rules may expose other server ports.\nBackups, certificates, packages, manager and remote nodes will be preserved.\nYou can install the panel again afterwards.")
 		case "panel-protection":
 			description = m.l("Будет включена защита: ", "Enable protection: ") + m.panelRequest.Protection + "\n" + m.l("Сервисы панели будут запущены, прокси перенастроен.\nДанные дополнительного входа будут сохранены и показаны.\nПароль панели не меняется.\nПри повторе после ошибки выберите тот же режим и домен.", "Panel services will be started and the proxy reconfigured.\nThe additional login credentials will be saved and shown.\nThe panel password is unchanged.\nAfter an error retry the same mode and domain.")
 			if m.panelRequest.Protection == "mfa" {

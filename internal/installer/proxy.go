@@ -179,6 +179,7 @@ func (r *Real) configureProxy(ctx context.Context) error {
 		return err
 	}
 	if p.Proxy == "caddy" {
+		services.ReportProgress(ctx, "Настраиваю Caddy и автоматический HTTPS", "Configuring Caddy and automatic HTTPS")
 		path := r.systemPath("/etc/caddy/Caddyfile")
 		return r.proxyFile(ctx, path, []byte(RenderCaddy(r.state)), "caddy", []string{"caddy", "validate", "--config", path, "--adapter", "caddyfile"})
 	}
@@ -198,15 +199,18 @@ func (r *Real) configureProxy(ctx context.Context) error {
 	// HTTP bootstrap has no proxy forwarding, only ACME; panel credentials never
 	// travel in cleartext before the first certificate has been issued.
 	bootstrap := RenderNginx(r.state, false)
+	services.ReportProgress(ctx, "Настраиваю Nginx для проверки доменов ACME", "Configuring Nginx for ACME domain validation")
 	if e := r.proxyFile(ctx, path, []byte(bootstrap), "nginx", []string{"nginx", "-t"}); e != nil {
 		return e
 	}
 	for _, domain := range proxyDomains(p) {
+		services.ReportProgress(ctx, "Получаю HTTPS-сертификат для "+domain, "Obtaining an HTTPS certificate for "+domain)
 		if _, e := r.Runner.Run(ctx, nil, "certbot", "certonly", "--webroot", "-w", "/var/www/remnamanager-acme", "-d", domain, "--email", p.Email, "--agree-tos", "--non-interactive", "--keep-until-expiring"); e != nil {
 			return e
 		}
 	}
 	hook := "#!/bin/sh\nset -eu\n/usr/sbin/nginx -t\n/bin/systemctl reload nginx\n"
+	services.ReportProgress(ctx, "Включаю HTTPS и автоматическое обновление сертификатов", "Enabling HTTPS and automatic certificate renewal")
 	if e := writeFile(r.systemPath("/etc/letsencrypt/renewal-hooks/deploy/remnamanager-go-nginx"), []byte(hook), 0700); e != nil {
 		return e
 	}

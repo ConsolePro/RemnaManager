@@ -15,7 +15,7 @@ var failure = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 
 func (m Model) body() string {
 	switch m.screen {
-	case "nodeInstallInput", "nodeInstallConfirm", "nodeInstallProgress", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult", "nodeInstallPanelIP":
+	case "nodeConnectInput", "nodeDetailsInput", "nodeCountry", "nodeSite", "nodeInstallInput", "nodeInstallConfirm", "nodeInstallProgress", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult", "nodeInstallPanelIP":
 		return m.nodeInstallView()
 	case "menu":
 		f := m.frames[len(m.frames)-1]
@@ -94,13 +94,17 @@ func (m Model) body() string {
 		if m.liveInstall() {
 			title = m.l("Реальная установка", "Real installation")
 		}
-		rows := []string{accent.Render(title), accent.Render(status), m.classicProgressView(percent), fmt.Sprintf("%.0f%%", percent*100), ""}
+		rows := []string{accent.Render(title), m.classicProgressView(percent), ""}
 		for i, step := range steps {
 			prefix := "○ "
 			if i < m.stage {
 				prefix = "✓ "
 			} else if i == m.stage {
-				prefix = "● "
+				frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+				prefix = frames[m.installFrame%len(frames)] + " "
+				if m.problem != "" {
+					prefix = "✗ "
+				}
 			}
 			rows = append(rows, prefix+m.l(step[0], step[1]))
 		}
@@ -108,8 +112,24 @@ func (m Model) body() string {
 		if m.liveInstall() {
 			journal = m.l("Журнал этапов", "Stage log")
 		}
-		rows = append(rows, "", journal)
-		rows = append(rows, m.logs...)
+		rows = append(rows, "", journal, accent.Render(status))
+		if len(m.logs) == 0 && m.stage < len(steps) {
+			rows = append(rows, m.l("Подготавливаю выполнение этапа…", "Preparing stage…"))
+		}
+		// Keep the latest action visible below the stage list on short terminals.
+		topHeight := lipgloss.Height(m.serverHeader(time.Now()) + "\n\n" + m.classicStatsView())
+		visibleLogs := max(1, m.height-topHeight-5-len(rows))
+		logs := m.logs[max(0, len(m.logs)-visibleLogs):]
+		for i, action := range logs {
+			prefix := "✓ "
+			if i == len(logs)-1 && m.stage < len(steps) {
+				prefix = "→ "
+				if m.problem != "" {
+					prefix = "✗ "
+				}
+			}
+			rows = append(rows, prefix+action)
+		}
 		if m.stage == len(steps) && !m.liveInstall() {
 			rows = append(rows, "", accent.Render(m.l("Демонстрация завершена. Enter — в меню.", "Demonstration complete. Enter — return to menu.")))
 		}
@@ -142,7 +162,7 @@ func (m Model) viewportBody() string {
 	if m.problem != "" {
 		body += "\n\n" + failure.Render(m.problem)
 	}
-	if strings.HasPrefix(m.screen, "panel") && m.screen != "panelInput" || strings.HasPrefix(m.screen, "node") && m.screen != "nodesList" && m.screen != "nodesInput" && m.screen != "nodeInstallInput" && m.screen != "nodeInstallPending" {
+	if strings.HasPrefix(m.screen, "panel") && m.screen != "panelInput" || strings.HasPrefix(m.screen, "node") && m.screen != "nodesList" && m.screen != "nodesInput" && m.screen != "nodeInstallInput" && m.screen != "nodeConnectInput" && m.screen != "nodeDetailsInput" && m.screen != "nodeInstallPending" {
 		body = ansi.Hardwrap(body, max(1, m.width-6), true)
 	}
 	return body
@@ -155,6 +175,12 @@ func (m Model) View() string {
 	width := m.width - 6
 	header := m.serverHeader(time.Now())
 	top := header + "\n\n" + m.classicStatsView()
+	if m.nodeConnectWizard && (m.screen == "nodeConnectInput" || m.screen == "nodeDetailsInput" || m.screen == "nodeCountry" || m.screen == "nodeSite" || m.screen == "nodesTrust" || m.screen == "nodeInstallConfirm") {
+		top = header
+		if m.height < 28 {
+			top = ansi.Truncate(accent.Render("REMNA MANAGER")+" · "+m.nodeTitle, width, "…")
+		}
+	}
 	if m.exitConfirm {
 		top = m.exitView() + "\n\n" + top
 	}
@@ -192,8 +218,11 @@ func (m Model) View() string {
 		} else if 4 < vp.YOffset {
 			vp.SetYOffset(4)
 		}
-	} else if m.screen == "nodeInstallInput" {
+	} else if m.screen == "nodeInstallInput" || m.screen == "nodeConnectInput" || m.screen == "nodeDetailsInput" {
 		cursor := 3 + m.focus*2
+		if m.screen != "nodeInstallInput" {
+			cursor += 2
+		}
 		if cursor >= vp.YOffset+vp.Height {
 			vp.SetYOffset(cursor - vp.Height + 1)
 		} else if cursor < vp.YOffset {

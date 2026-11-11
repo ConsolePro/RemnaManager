@@ -27,6 +27,31 @@ func TestWriteLiveNodeFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc["services"].(map[string]any)["remnanode"] = map[string]any{"image": "remnawave/node:latest", "networks": []string{"panel"}, "profiles": []string{"node-test"}, "environment": map[string]string{"NODE_PORT": "2222", "SECRET_KEY": "pending"}}
+	if os.Getenv("RM_NODE_V2_INTEGRATION") == "1" {
+		svc := doc["services"].(map[string]any)["remnanode"].(map[string]any)
+		svc["environment"] = map[string]string{"NODE_PORT": "3333", "SECRET_KEY": "pending"}
+		svc["networks"] = map[string]any{"panel": map[string]any{"aliases": []string{"node.fixture.test"}}}
+		svc["ports"] = []string{"127.0.0.1::80", "127.0.0.1::443"}
+		conf := `server { listen 80; server_name cover.fixture.test; location / { return 301 https://$host$request_uri; } }
+server { listen 127.0.0.1:8443 ssl proxy_protocol; server_name cover.fixture.test; ssl_certificate /certs/fullchain.pem; ssl_certificate_key /certs/privkey.pem; root /usr/share/nginx/html; location / { try_files $uri $uri/ =404; } }`
+		if err := writeFile(filepath.Join(root, "node-nginx.conf"), []byte(conf), 0644); err != nil {
+			t.Fatal(err)
+		}
+		entries, err := nodeAssets.ReadDir("node_assets/sites/atlas")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			data, err := nodeAssets.ReadFile("node_assets/sites/atlas/" + entry.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writeFile(filepath.Join(root, "node-site", entry.Name()), data, 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		doc["services"].(map[string]any)["node-site"] = map[string]any{"image": "nginx:1.28-alpine", "network_mode": "service:remnanode", "profiles": []string{"node-test"}, "volumes": []string{"./node-nginx.conf:/etc/nginx/conf.d/default.conf:ro", "./node-site:/usr/share/nginx/html:ro", "./certs/panel.test:/certs:ro"}}
+	}
 	data, _ = json.MarshalIndent(doc, "", "  ")
 	if err = writeFile(path, data, 0600); err != nil {
 		t.Fatal(err)

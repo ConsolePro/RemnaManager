@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -18,18 +19,18 @@ import (
 
 func ValidateNodeSSH(settings services.NodeSSH) error {
 	if settings.Port < 1 || settings.Port > 65535 {
-		return errors.New("SSH port must be between 1 and 65535")
+		return services.LocalizedError("SSH-порт должен быть числом от 1 до 65535.", "SSH port must be between 1 and 65535")
 	}
 	ip := net.ParseIP(settings.Host)
 	if ip == nil && !ValidDomain(settings.Host) {
-		return errors.New("SSH address must be an IP address or a DNS name without scheme, path or username")
+		return services.LocalizedError("Укажите IP-адрес или домен SSH-сервера без протокола, пути и имени пользователя.", "SSH address must be an IP address or a DNS name without scheme, path or username")
 	}
 	if ip != nil && (ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLoopback()) {
-		return errors.New("use a unicast remote SSH address")
+		return services.LocalizedError("Укажите IP-адрес удалённого SSH-сервера; локальные и групповые адреса не подходят.", "use a unicast remote SSH address")
 	}
 	if settings.IdentityFile != "" {
 		if !filepath.IsAbs(settings.IdentityFile) || strings.IndexFunc(settings.IdentityFile, unicode.IsControl) >= 0 {
-			return errors.New("SSH identity must be an absolute path without control characters")
+			return services.LocalizedError("Укажите абсолютный путь к SSH-ключу без управляющих символов или оставьте поле пустым.", "SSH identity must be an absolute path without control characters")
 		}
 	}
 	return nil
@@ -61,7 +62,7 @@ func (r *Real) scanNodeSSH(ctx context.Context, settings services.NodeSSH) (stri
 	}
 	data, err := r.Runner.Run(ctx, nil, "ssh-keyscan", "-T", "10", "-p", strconv.Itoa(settings.Port), "-t", "ed25519", settings.Host)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("%w: %w", services.LocalizedError("Не удалось получить отпечаток SSH-сервера. Проверьте IP/домен, SSH-порт и доступность SSH на ноде.", "Could not read the SSH server fingerprint. Check the IP/domain, SSH port and node SSH availability."), err)
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
@@ -74,7 +75,7 @@ func (r *Real) scanNodeSSH(ctx context.Context, settings services.NodeSSH) (stri
 		}
 		return "ssh-ed25519 " + fields[2], fingerprint, nil
 	}
-	return "", "", errors.New("SSH server did not provide an Ed25519 host key")
+	return "", "", services.LocalizedError("SSH-сервер не предоставил ключ Ed25519. Проверьте настройки и наличие /etc/ssh/ssh_host_ed25519_key.pub на ноде.", "The SSH server did not provide an Ed25519 host key. Check its configuration and /etc/ssh/ssh_host_ed25519_key.pub.")
 }
 
 func (r *Real) prepareNodeSSH(ctx context.Context, uuid string, settings services.NodeSSH) (services.NodeResult, error) {
@@ -83,6 +84,14 @@ func (r *Real) prepareNodeSSH(ctx context.Context, uuid string, settings service
 		return services.NodeResult{}, err
 	}
 	old := r.state.NodeSSH[uuid]
+	if uuid == "" {
+		for _, saved := range r.state.NodeSSH {
+			if saved.Host == settings.Host && saved.Port == settings.Port {
+				old = saved
+				break
+			}
+		}
+	}
 	settings.HostKey = ""
 	return services.NodeResult{SSH: settings, Fingerprint: fingerprint, HostKeyChanged: old.HostKey != "" && (old.HostKey != key || old.Host != settings.Host || old.Port != settings.Port)}, nil
 }

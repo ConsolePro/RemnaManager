@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -41,7 +42,11 @@ func (r ExecRunner) Run(ctx context.Context, input []byte, name string, args ...
 		cmd.Stdin = bytesReader(input)
 	}
 	cmd.WaitDelay = 5 * time.Second
-	data, err := cmd.CombinedOutput()
+	var captured bytes.Buffer
+	output := io.MultiWriter(&captured, &setupProgressWriter{ctx: ctx})
+	cmd.Stdout, cmd.Stderr = output, output
+	err := cmd.Run()
+	data := captured.Bytes()
 	if r.Log != nil {
 		_, _ = fmt.Fprintf(r.Log, "[%s] %s: exit=%v\n%s\n", time.Now().Format(time.RFC3339), name, err, data)
 	}

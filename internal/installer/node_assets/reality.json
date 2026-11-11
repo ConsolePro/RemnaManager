@@ -1,0 +1,31 @@
+{
+  "log": {"loglevel": "none"},
+  "dns": {"servers": ["1.1.1.1", "1.0.0.1"]},
+  "inbounds": [{
+    "tag": "VLESS_REALITY_PROFILE",
+    "listen": "::",
+    "port": 443,
+    "protocol": "vless",
+    "settings": {"clients": [], "decryption": "none"},
+    "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
+    "streamSettings": {
+      "network": "raw",
+      "security": "reality",
+      "realitySettings": {
+        "show": false,
+        "target": "127.0.0.1:8443",
+        "xver": 1,
+        "serverNames": [],
+        "privateKey": "",
+        "shortIds": [],
+        "minClientVer": "0.0.0"
+      }
+    }
+  }],
+  "outbounds": [{"tag": "DIRECT", "protocol": "freedom"}, {"tag": "BLOCK", "protocol": "blackhole"}],
+  "routing": {"rules": [
+    {"type": "field", "ip": ["geoip:private"], "outboundTag": "BLOCK"},
+    {"type": "field", "domain": ["geosite:private"], "outboundTag": "BLOCK"},
+    {"type": "field", "protocol": ["bittorrent"], "outboundTag": "BLOCK"}
+  ]}
+}

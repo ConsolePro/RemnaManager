@@ -43,9 +43,9 @@ func TestRenderPreviewArtifacts(t *testing.T) {
 	m.screen = "progress"
 	m.stage = 4
 	m.height = 36
-	for _, step := range m.service.Stages()[:4] {
-		m.logs = append(m.logs, "Демо: "+step[0])
-	}
+	m.service = &liveFake{}
+	m.stage = 1
+	m.logs = []string{"Проверяю установленные пакеты и зависимости", "Обновляю список пакетов", "Устанавливаю зависимости и выбранный прокси", "Устанавливаю Docker Engine и Compose"}
 	if err := os.WriteFile(filepath.Join(dir, "progress.ansi"), []byte(m.View()), 0600); err != nil {
 		t.Fatal(err)
 	}

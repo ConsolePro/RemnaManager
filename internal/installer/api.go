@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ConsolePro/RemnaManager/internal/services"
 )
 
 func apiCall(ctx context.Context, client *http.Client, base, host, method, path, token string, body any) (map[string]json.RawMessage, error) {
@@ -89,11 +91,13 @@ func responseString(data map[string]json.RawMessage, key string) (string, error)
 }
 
 func (r *Real) bootstrap(ctx context.Context) error {
+	services.ReportProgress(ctx, "Ожидаю готовности API панели", "Waiting for the panel API to become ready")
 	if err := r.waitAPI(ctx); err != nil {
 		return err
 	}
 	s := &r.state
 	if s.ManagerToken != "" && s.SubToken != "" {
+		services.ReportProgress(ctx, "Проверяю сохранённые API-токены", "Validating saved API tokens")
 		for _, probe := range []struct{ path, token string }{{"/nodes", s.ManagerToken}, {"/system/stats", s.SubToken}} {
 			req, e := http.NewRequestWithContext(ctx, "GET", r.APIBase+probe.path, nil)
 			if e != nil {
@@ -113,6 +117,7 @@ func (r *Real) bootstrap(ctx context.Context) error {
 		}
 		return nil
 	}
+	services.ReportProgress(ctx, "Создаю администратора или проверяю сохранённый вход", "Creating the administrator or validating saved credentials")
 	status, err := apiCall(ctx, r.Client, r.APIBase, s.Params.PanelDomain, "GET", "/auth/status", "", nil)
 	if err != nil {
 		return err
@@ -142,6 +147,7 @@ func (r *Real) bootstrap(ctx context.Context) error {
 		if *entry.target != "" {
 			continue
 		}
+		services.ReportProgress(ctx, "Создаю API-токен "+entry.name, "Creating API token "+entry.name)
 		data, err := apiCall(ctx, r.Client, r.APIBase, s.Params.PanelDomain, "POST", "/tokens", token, map[string]any{"name": entry.name, "expiresInDays": 3650, "scopes": entry.scopes})
 		if err != nil {
 			return err
@@ -172,6 +178,7 @@ func (r *Real) waitAPI(ctx context.Context) error {
 	}
 }
 func (r *Real) waitHTTPS(ctx context.Context) error {
+	services.ReportProgress(ctx, "Проверяю публичный HTTPS и защиту панели", "Checking public HTTPS and panel protection")
 	wait, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	for {
@@ -187,6 +194,7 @@ func (r *Real) waitHTTPS(ctx context.Context) error {
 	}
 	// A bare subscription URL intentionally closes its socket. Check its public
 	// certificate without a real user's shortUuid or relaxed TLS verification.
+	services.ReportProgress(ctx, "Проверяю публичный TLS-сертификат домена подписки", "Checking the subscription domain's public TLS certificate")
 	for {
 		dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: 10 * time.Second}, Config: &tls.Config{MinVersion: tls.VersionTLS12}}
 		conn, err := dialer.DialContext(wait, "tcp", net.JoinHostPort(r.state.Params.SubscriptionDomain, "443"))

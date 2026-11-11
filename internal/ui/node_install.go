@@ -19,6 +19,7 @@ func (m Model) openNodeInstall(selected item) (tea.Model, tea.Cmd) {
 	m.nodeAction = selected.action
 	m.nodeTitle = m.l(selected.ru, selected.en)
 	m.nodeInstallJob = nil
+	m.nodeConnectWizard, m.nodeTrustFirst = false, false
 	m.nodeInstallJobs = nil
 	m.nodeCursor = 0
 	m.problem = ""
@@ -28,13 +29,15 @@ func (m Model) openNodeInstall(selected item) (tea.Model, tea.Cmd) {
 		return m.startNodeRequest(services.NodeRequest{Action: "node-install-pending"})
 	}
 	m.nodeInstallParams = services.NodeInstallParameters{SSH: services.NodeSSH{Port: 22}}
-	m.prepareNodeInstallInputs()
-	m.screen = "nodeInstallInput"
+	m.nodeConnectWizard = true
+	m.prepareNodeConnection()
+	m.focus = 0
+	m.screen = "nodeConnectInput"
 	return m, m.inputs[0].Focus()
 }
 func (m *Model) prepareNodeInstallInputs() {
 	p := m.nodeInstallParams
-	m.inputs = []textinput.Model{newInput("Node-01", p.Name), newInput("node.example.com", p.Address), newInput("22", strconv.Itoa(p.SSH.Port)), newInput("cover.example.com", p.Domain), newInput(m.l("Пусто — определить автоматически по SSH", "Empty — detect automatically over SSH"), p.PanelIP), newInput(m.l("Пусто — SSH agent / стандартный ключ / пароль", "Empty — SSH agent / default key / password"), p.SSH.IdentityFile)}
+	m.inputs = []textinput.Model{newInput("Node-01", p.Name), newInput("node.example.com", p.Address), newInput("22", strconv.Itoa(p.SSH.Port)), newInput("cover.example.com", p.Domain), newInput(m.l("Пусто — определить автоматически по SSH", "Empty — detect automatically over SSH"), p.PanelIP), newInput(m.l("Пусто — пароль root, ключ создаст менеджер", "Empty — root password; manager creates a key"), p.SSH.IdentityFile)}
 	for i := range m.inputs {
 		m.inputs[i].Width = max(1, min(60, m.width-12))
 	}
@@ -47,10 +50,17 @@ func (m Model) receiveNodeInstall(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 		m.nodeInstallJobs = msg.result.Jobs
 		m.nodeCursor = min(m.nodeCursor, max(0, len(m.nodeInstallJobs)-1))
 		m.screen = "nodeInstallPending"
-	case "node-install-scan", "node-install-rescan":
+	case "node-install-connect-scan", "node-install-scan", "node-install-rescan":
 		m.nodeSSH = msg.result.SSH
 		m.nodeFingerprint = msg.result.Fingerprint
 		m.nodeSSHChanged = msg.result.HostKeyChanged
+		if msg.action == "node-install-rescan" && m.nodeInstallJob != nil && m.nodeInstallJob.Version >= 2 && !m.nodeSSHChanged {
+			if m.nodeInstallJob.DetailsPending {
+				return m.startNodeRequest(services.NodeRequest{Action: "node-install-auth", JobID: m.nodeInstallJob.ID, Fingerprint: m.nodeFingerprint})
+			}
+			m.screen = "nodeInstallConfirm"
+			return m, nil
+		}
 		m.inputs = []textinput.Model{newInput("SHA256:…", "")}
 		m.inputs[0].Width = max(1, min(60, m.width-12))
 		m.inputs[0].CharLimit = 128
@@ -58,10 +68,20 @@ func (m Model) receiveNodeInstall(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 		m.screen = "nodesTrust"
 		return m, m.inputs[0].Focus()
 	case "node-install-load":
+		m.nodeConnectWizard = m.nodeInstallJob.Version >= 2
 		return m.startNodeRequest(services.NodeRequest{Action: "node-install-rescan", JobID: m.nodeInstallJob.ID})
-	case "node-install-create":
+	case "node-install-connect-create", "node-install-create":
 		return m.startNodeRequest(services.NodeRequest{Action: "node-install-auth", JobID: m.nodeInstallJob.ID, Fingerprint: m.nodeFingerprint})
 	case "node-install-authenticated":
+		return m.startNodeRequest(services.NodeRequest{Action: "node-install-key", JobID: m.nodeInstallJob.ID})
+	case "node-install-key":
+		if m.nodeInstallJob.DetailsPending {
+			m.prepareNodeDetails()
+			m.screen = "nodeDetailsInput"
+			return m, m.inputs[0].Focus()
+		}
+		fallthrough
+	case "node-install-details":
 		if m.nodeInstallParams.PanelIP == "" {
 			return m.startNodeRequest(services.NodeRequest{Action: "node-install-detect-panel-ip", JobID: m.nodeInstallJob.ID})
 		}
@@ -96,6 +116,8 @@ func (m Model) showNodePanelIP(value string) (tea.Model, tea.Cmd) {
 func (m Model) updateNodeInstallScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	switch m.screen {
+	case "nodeConnectInput", "nodeDetailsInput", "nodeCountry", "nodeSite":
+		return m.updateNodeWizard(msg)
 	case "nodeInstallPanelIP":
 		if key == "enter" {
 			value := strings.TrimSpace(m.inputs[0].Value())
@@ -133,7 +155,7 @@ func (m Model) updateNodeInstallScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p := services.NodeInstallParameters{Name: strings.TrimSpace(m.inputs[0].Value()), Address: strings.ToLower(strings.TrimSpace(m.inputs[1].Value())), Domain: strings.ToLower(strings.TrimSpace(m.inputs[3].Value())), PanelIP: strings.TrimSpace(m.inputs[4].Value())}
 			p.SSH = services.NodeSSH{Host: p.Address, Port: port, IdentityFile: strings.TrimSpace(m.inputs[5].Value())}
 			if err = installer.ValidateNodeInstall(p); err != nil {
-				m.problem = err.Error()
+				m.problem = m.errorText(err)
 				return m, nil
 			}
 			m.nodeInstallParams = p
@@ -145,6 +167,9 @@ func (m Model) updateNodeInstallScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "nodeInstallConfirm":
 		if key == "enter" {
 			if m.nodeInstallJob != nil {
+				if m.nodeInstallJob.DetailsPending {
+					return m.startNodeRequest(services.NodeRequest{Action: "node-install-details", JobID: m.nodeInstallJob.ID, Install: m.nodeInstallParams})
+				}
 				return m.startNodeRequest(services.NodeRequest{Action: "node-install-auth", JobID: m.nodeInstallJob.ID, Fingerprint: m.nodeFingerprint})
 			}
 			return m.startNodeRequest(services.NodeRequest{Action: "node-install-create", Install: m.nodeInstallParams, Fingerprint: m.nodeFingerprint})
@@ -188,6 +213,8 @@ func (m Model) updateNodeInstallScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) nodeInstallView() string {
 	title := accent.Render(m.nodeTitle)
 	switch m.screen {
+	case "nodeConnectInput", "nodeDetailsInput", "nodeCountry", "nodeSite":
+		return m.nodeWizardView()
 	case "nodeInstallPanelIP":
 		return title + "\n\n" + m.l("Адрес панели для firewall ноды", "Panel address for the node firewall") + "\n\n" + m.inputs[0].View() + "\n\n" + m.l("Адрес определён со стороны ноды по SSH-соединению.\nПроверьте его: подключения backend могут использовать другой адрес.\nПри необходимости исправьте IP и нажмите Enter.\nЕсли адрес не определён, введите его вручную.\nУстановка на ноде ещё не началась.", "The address is detected by the node from the SSH connection.\nCheck it: backend connections may use a different address.\nEdit the IP if needed and press Enter.\nIf detection failed, enter the address manually.\nInstallation on the node has not started yet.")
 	case "nodeInstallInput":
@@ -196,7 +223,7 @@ func (m Model) nodeInstallView() string {
 		for i, label := range labels {
 			rows = append(rows, m.l(label[0], label[1]), m.inputs[i].View())
 		}
-		rows = append(rows, "", m.l("Нужен отдельный VPS с systemd. Пароль запросит OpenSSH; он не сохраняется.", "A dedicated VPS with systemd is required. OpenSSH asks for a password; it is not saved."))
+		rows = append(rows, "", m.l("Нужен отдельный VPS с systemd. Пользователь SSH: root.\nЕсли ключа нет — оставьте поле пустым: OpenSSH запросит пароль root (ввод скрыт).\nПосле входа менеджер создаст ключ для этой ноды и проверит подключение по нему.\nПароль не сохраняется. Ключ от хостинга не нужен.", "A dedicated VPS with systemd is required. SSH user: root.\nWithout a key, leave the field empty: OpenSSH asks for the root password (hidden input).\nAfter login the manager creates a key for this node and verifies key-only access.\nThe password is not saved. No hosting-provider private key is required."))
 		return strings.Join(rows, "\n")
 	case "nodeInstallConfirm":
 		p := m.nodeInstallParams
@@ -204,12 +231,26 @@ func (m Model) nodeInstallView() string {
 			p.PanelIP = m.l("автоматически после входа по SSH", "automatic after SSH authentication")
 		}
 		text := title + fmt.Sprintf("\n\n%s\n%s · SSH %d\nSelfsteal: %s\nPanel IP: %s\n\n", p.Name, p.Address, p.SSH.Port, p.Domain, p.PanelIP)
+		apiPort := p.APIPort
+		if apiPort == 0 {
+			apiPort = 2222
+		}
+		if m.nodeConnectWizard {
+			text += fmt.Sprintf("%s: %s\n%s: %s\nAPI: %d\n%s: %s\n\n", m.l("Страна", "Country"), p.CountryCode, m.l("Профиль", "Profile"), p.ProfileName, apiPort, m.l("Шаблон сайта", "Website template"), p.SiteTemplate)
+		}
 		if m.nodeInstallJob != nil {
 			text += m.l("Продолжение установки: ", "Resume installation: ") + m.nodeInstallJob.ID + "\n\n"
 		}
-		return text + warning.Render(m.l("Будут установлены Docker, Nginx, сертификат и Remnawave Node.\nВ панели будут созданы профиль Reality, хост и internal squad.\nНовые входящие порты: SSH, TCP 80/443 и 2222 только с IP панели.\nОстальные порты закроются с таймером отката на 120 секунд.", "Docker, Nginx, a certificate and Remnawave Node will be installed.\nA Reality profile, host and internal squad will be created in the panel.\nNew inbound ports: SSH, TCP 80/443, and 2222 only from the panel IP.\nOther ports will be blocked with a 120-second rollback timer.")) + "\n\n" + m.l("Enter — начать / продолжить · Esc — назад", "Enter — install / resume · Esc — back")
+		if p.SSH.IdentityFile == "" {
+			text += m.l("Вход: root по паролю. Пароль вводится в OpenSSH и не сохраняется.\nПосле входа будет создан и проверен отдельный SSH-ключ для ноды.\n\n", "Login: root password, entered in OpenSSH and never saved.\nA dedicated SSH key will then be created and verified for this node.\n\n")
+		}
+		return text + warning.Render(fmt.Sprintf(m.l("Будут установлены Docker, Nginx, сертификат и Remnawave Node.\nСначала профиль и нода в панели, после запуска — хост Firefox и squad.\nОткрытые порты: SSH, TCP 80/443 и API %d только с IP панели.\nОстальные порты закроются с таймером отката на 120 секунд.", "Docker, Nginx, a certificate and Remnawave Node will be installed.\nProfile and node are created first; Firefox host and squad follow startup.\nOpen ports: SSH, TCP 80/443 and API %d only from the panel IP.\nOther ports are blocked with a 120-second rollback timer."), apiPort)) + "\n\n" + m.l("Enter — начать / продолжить · Esc — назад", "Enter — install / resume · Esc — back")
 	case "nodeInstallProgress":
-		steps := installer.NodeInstallStages()
+		version := 2
+		if m.nodeInstallJob != nil {
+			version = m.nodeInstallJob.Version
+		}
+		steps := installer.NodeInstallStagesForVersion(version)
 		rows := []string{title, ""}
 		done := 0
 		for i, step := range steps {
@@ -241,6 +282,9 @@ func (m Model) nodeInstallView() string {
 		}
 		for i, j := range m.nodeInstallJobs {
 			line := fmt.Sprintf("%s · %s · %d/%d · %s", j.Params.Name, j.Params.Address, j.Stage, len(installer.NodeInstallStages()), j.ID[:8])
+			if j.DetailsPending {
+				line = fmt.Sprintf("%s · %s · %s", m.l("SSH: параметры ноды ещё не заполнены", "SSH: node details pending"), j.Params.Address, j.ID[:8])
+			}
 			if i == m.nodeCursor {
 				line = accent.Render("› " + line)
 			} else {

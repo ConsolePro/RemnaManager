@@ -20,14 +20,14 @@ var nodeUUIDPattern = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F
 
 func ValidateNodeName(name string) error {
 	if strings.TrimSpace(name) != name || utf8.RuneCountInString(name) < 3 || utf8.RuneCountInString(name) > 30 || strings.IndexFunc(name, unicode.IsControl) >= 0 {
-		return errors.New("node name must contain 3–30 characters without control characters or surrounding spaces")
+		return services.LocalizedError("Имя ноды должно содержать от 3 до 30 символов, без управляющих символов и пробелов по краям.", "node name must contain 3–30 characters without control characters or surrounding spaces")
 	}
 	return nil
 }
 
 func (r *Real) ManageNodes(ctx context.Context, request services.NodeRequest) (services.NodeResult, error) {
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
-		return services.NodeResult{}, errors.New("node management requires Linux and root")
+		return services.NodeResult{}, services.LocalizedError("Для управления нодами необходим Linux и запуск от root.", "node management requires Linux and root")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -44,8 +44,10 @@ func (r *Real) manageNodes(ctx context.Context, request services.NodeRequest) (s
 		return result, err
 	}
 	readOnly := request.Action == "nodes-list" || request.Action == "node-status" || request.Action == "node-ssh-settings" || request.Action == "node-install-pending" || request.Action == "node-install-load"
-	if !readOnly && (!r.state.Ready || r.state.FirewallPending || r.state.RecoveryBackup != "" || r.state.SubRecovery != "") {
-		return result, errors.New("finish installation or component recovery before modifying nodes")
+	if !readOnly {
+		if err := nodeReadinessError(r.state); err != nil {
+			return result, err
+		}
 	}
 	if strings.HasPrefix(request.Action, "node-install-") {
 		result, err := r.nodeProvision(ctx, request)
@@ -181,4 +183,20 @@ func (r *Real) manageNodes(ctx context.Context, request services.NodeRequest) (s
 		return services.NodeResult{}, fmt.Errorf("%w; private log: %s", err, r.LogPath)
 	}
 	return result, nil
+}
+
+func nodeReadinessError(s State) error {
+	switch {
+	case s.FirewallPending:
+		return services.LocalizedError("Добавление и изменение нод заблокировано: не подтверждён SSH-доступ после установки панели. Откройте «Панель и компоненты → Установить панель», продолжите установку с сохранёнными параметрами и подтвердите доступ по SSH в конце.", "Node changes are blocked: SSH access after panel installation has not been confirmed. Resume Panel and components → Install panel with the saved parameters and confirm SSH access at the end.")
+	case s.RecoveryBackup != "":
+		return services.LocalizedError("Добавление и изменение нод заблокировано: обновление панели прервано, требуется проверка и восстановление базы данных. Резервная копия: "+s.RecoveryBackup, "Node changes are blocked: a panel update was interrupted; inspect and recover the database. Backup: "+s.RecoveryBackup)
+	case s.SubRecovery != "":
+		return services.LocalizedError("Добавление и изменение нод заблокировано: не завершено восстановление страницы подписки. Выберите «Панель и компоненты → Страница подписки → Установка / запуск».", "Node changes are blocked: subscription recovery is pending. Choose Panel and components → Subscription page → Install / start.")
+	case s.ProtectionPending:
+		return services.LocalizedError("Добавление и изменение нод заблокировано: не завершена настройка защиты панели. Откройте «Панель и компоненты → Защита панели» и повторите настройку с тем же режимом и доменом.", "Node changes are blocked: panel protection setup is pending. Open Panel and components → Panel protection and resume with the same mode and domain.")
+	case !s.Ready:
+		return services.LocalizedError("Добавление и изменение нод заблокировано: установка панели не отмечена как завершённая. Откройте «Панель и компоненты → Установить панель», продолжите с сохранёнными параметрами и подтвердите SSH-доступ в конце. Это состояние панели, а не ошибка в полях ноды.", "Node changes are blocked: panel installation is not marked complete. Resume Panel and components → Install panel with saved parameters and confirm SSH access at the end. This is panel state, not invalid node fields.")
+	}
+	return nil
 }

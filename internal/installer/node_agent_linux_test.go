@@ -23,7 +23,7 @@ func TestWriteNodeAgentFirewall(t *testing.T) {
 	if start < 0 || end <= start {
 		t.Fatal("agent firewall function missing")
 	}
-	script := "set -eu\ntable=remnamanager_node\npanel_ip='" + ip.String() + "'\nssh_ports() { echo 2200; }\n" + string(nodeAgent[start:end]) + "\nrules true\n"
+	script := "set -eu\ntable=remnamanager_node\napi_port=2222\npanel_ip='" + ip.String() + "'\nssh_ports() { echo 2200; }\n" + string(nodeAgent[start:end]) + "\nrules true\n"
 	runner := ExecRunner{}
 	rules, err := runner.Run(context.Background(), []byte(script), "bash", "-s")
 	if err != nil {
