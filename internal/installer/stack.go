@@ -7,7 +7,7 @@ import (
 )
 
 // RenderStack deliberately publishes neither the database nor Valkey/metrics.
-// Host reverse proxies can reach only the two loopback application endpoints.
+// Host reverse proxies reach application endpoints only through loopback.
 func RenderStack(s State) ([]byte, error) {
 	common := func(image string) map[string]any {
 		return map[string]any{"image": image, "restart": "unless-stopped", "networks": []string{"panel"}, "logging": map[string]any{"driver": "json-file", "options": map[string]string{"max-size": "10m", "max-file": "3"}}}
@@ -31,7 +31,27 @@ func RenderStack(s State) ([]byte, error) {
 	sub["env_file"] = []string{"subscription.env"}
 	sub["ports"] = []string{"127.0.0.1:3010:3010"}
 	sub["profiles"] = []string{"subscription"}
-	return json.MarshalIndent(map[string]any{"name": "remnamanager-panel", "services": map[string]any{"remnawave": backend, "remnawave-db": database, "remnawave-redis": cache, "subscription": sub}, "networks": map[string]any{"panel": map[string]string{"driver": "bridge"}}, "volumes": map[string]any{"database": map[string]any{}, "valkey-socket": map[string]any{}}}, "", "  ")
+	services := map[string]any{"remnawave": backend, "remnawave-db": database, "remnawave-redis": cache, "subscription": sub}
+	volumes := map[string]any{"database": map[string]any{}, "valkey-socket": map[string]any{}}
+	if protectionMode(s.Params) == "tinyauth" {
+		auth := common(tinyAuthImage)
+		auth["env_file"] = []string{"tinyauth.env"}
+		auth["ports"] = []string{"127.0.0.1:3020:3000"}
+		auth["volumes"] = []string{"tinyauth-data:/data"}
+		auth["healthcheck"] = map[string]any{"test": []string{"CMD", "tinyauth", "healthcheck"}, "interval": "5s", "timeout": "5s", "retries": 20, "start_period": "10s"}
+		services["tinyauth"] = auth
+		volumes["tinyauth-data"] = map[string]any{}
+	}
+	if protectionMode(s.Params) == "mfa" {
+		auth := common(mfaContainerImage())
+		auth["env_file"] = []string{"mfa.env"}
+		auth["ports"] = []string{"127.0.0.1:3030:8080"}
+		auth["volumes"] = []string{"./mfa.Caddyfile:/etc/caddy/Caddyfile:ro", "mfa-data:/data"}
+		auth["healthcheck"] = map[string]any{"test": []string{"CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/_rm_gateway_health"}, "interval": "5s", "timeout": "5s", "retries": 20, "start_period": "10s"}
+		services["mfa-gateway"] = auth
+		volumes["mfa-data"] = map[string]any{}
+	}
+	return json.MarshalIndent(map[string]any{"name": "remnamanager-panel", "services": services, "networks": map[string]any{"panel": map[string]string{"driver": "bridge"}}, "volumes": volumes}, "", "  ")
 }
 
 func renderEnv(s State) []byte {

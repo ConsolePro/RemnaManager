@@ -193,7 +193,8 @@ func TestUnownedTableRefusedBeforeArmingRollback(t *testing.T) {
 }
 
 func TestHTTPBootstrapNeverProxiesCredentials(t *testing.T) {
-	config := RenderNginx(testParams(), false)
+	s, _ := newState(testParams())
+	config := RenderNginx(s, false)
 	if strings.Contains(config, "proxy_pass") || !strings.Contains(config, "return 503") || !strings.Contains(config, "/.well-known/acme-challenge/") {
 		t.Fatal("HTTP bootstrap must serve only ACME")
 	}

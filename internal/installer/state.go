@@ -29,6 +29,9 @@ type State struct {
 	SubSource                                                            string
 	DBPassword, AppSecret, MetricsPassword, WebhookSecret, AdminPassword string
 	ManagerToken, SubToken                                               string
+	CookieKey, CookieValue, TinyPassword, TinyHash                       string
+	MFAPassword, MFASigningKey                                           string
+	ProtectionPending                                                    bool
 	Completed                                                            map[int]bool
 	FirewallPending                                                      bool
 	FirewallOwned                                                        bool
@@ -54,6 +57,9 @@ func newState(p services.PanelParameters) (State, error) {
 		*target = value
 	}
 	s.AdminPassword = "Rm9" + s.AdminPassword[:40]
+	if e := ensureProtection(&s); e != nil {
+		return s, e
+	}
 	return s, nil
 }
 func loadState(path string) (State, error) {
@@ -89,6 +95,9 @@ func ValidateParameters(p services.PanelParameters) error {
 	if p.Proxy != "nginx" && p.Proxy != "caddy" {
 		return errors.New("proxy must be nginx or caddy")
 	}
+	if err := ValidateProtection(p); err != nil {
+		return err
+	}
 	if !config.ValidEmail(p.Email) {
 		return errors.New("valid ACME email is required")
 	}
@@ -99,7 +108,7 @@ func ValidateParameters(p services.PanelParameters) error {
 		return errors.New("at least one SSH port must be preserved")
 	}
 	for _, port := range p.SSHPorts {
-		if port < 1 || port > 65535 || port == 80 || port == 443 || port == 3000 || port == 3010 {
+		if port < 1 || port > 65535 || port == 80 || port == 443 || port == 3000 || port == 3010 || (port == 3020 && protectionMode(p) == "tinyauth") || (port == 3030 && protectionMode(p) == "mfa") {
 			return errors.New("invalid or conflicting SSH port")
 		}
 	}

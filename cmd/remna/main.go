@@ -20,7 +20,7 @@ func main() {
 		return
 	}
 	if err := app.RunMode(context.Background(), *path, *demo); err != nil {
-		fmt.Fprintln(os.Stderr, "remna:", err)
+		fmt.Fprintln(os.Stderr, "remanager:", err)
 		os.Exit(1)
 	}
 }

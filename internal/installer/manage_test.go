@@ -20,6 +20,7 @@ type managementRunner struct {
 	response func(string, []byte) ([]byte, error)
 	dump     string
 	dumpErr  error
+	mfaUsers string
 }
 
 func (f *managementRunner) Run(_ context.Context, input []byte, name string, args ...string) ([]byte, error) {
@@ -32,11 +33,57 @@ func (f *managementRunner) Run(_ context.Context, input []byte, name string, arg
 }
 func (f *managementRunner) RunTo(_ context.Context, out io.Writer, name string, args ...string) error {
 	f.calls = append(f.calls, name+" "+strings.Join(args, " "))
+	if strings.Contains(strings.Join(args, " "), "mfa-gateway cat /data/users.json") {
+		_, err := io.WriteString(out, f.mfaUsers)
+		return err
+	}
 	_, err := io.WriteString(out, f.dump)
 	if err != nil {
 		return err
 	}
 	return f.dumpErr
+}
+
+func TestMFABackupIncludesIdentityAndRejectsPartialData(t *testing.T) {
+	for _, valid := range []bool{true, false} {
+		t.Run(map[bool]string{true: "complete", false: "corrupt"}[valid], func(t *testing.T) {
+			r, f := managementFixture(t)
+			r.state.Params.Protection = "mfa"
+			if err := ensureProtection(&r.state); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.configure(); err != nil {
+				t.Fatal(err)
+			}
+			f.mfaUsers = `{"users":[{"username":"admin","mfa":["synthetic-secret"]}]}`
+			if !valid {
+				f.mfaUsers = "incomplete-json"
+			}
+			directory, err := r.backup(context.Background())
+			if !valid {
+				if err == nil {
+					t.Fatal("invalid MFA identity backup marked complete")
+				}
+				paths, _ := filepath.Glob(filepath.Join(r.Root, "backup-*", "COMPLETE"))
+				if len(paths) != 0 {
+					t.Fatal("corrupt backup has COMPLETE marker")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"mfa.env", "mfa.Caddyfile", "mfa-users.json", "COMPLETE"} {
+				if _, err := os.Stat(filepath.Join(directory, name)); err != nil {
+					t.Fatal(name, err)
+				}
+			}
+			data, _ := os.ReadFile(filepath.Join(directory, "mfa-users.json"))
+			if string(data) != f.mfaUsers {
+				t.Fatal("MFA factors were lost from backup")
+			}
+		})
+	}
 }
 func managementFixture(t *testing.T) (*Real, *managementRunner) {
 	t.Helper()
@@ -86,6 +133,37 @@ func TestManagementOwnershipAndRecoveryGuards(t *testing.T) {
 	}
 	if _, err := r.manage(context.Background(), services.PanelRequest{Action: "panel-status"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCredentialsRecoveredWithoutStackOrRunner(t *testing.T) {
+	r := NewReal()
+	r.Root = t.TempDir()
+	r.Stack = filepath.Join(t.TempDir(), "missing-stack")
+	r.Runner = nil // Credentials must not depend on any host command.
+	s, err := newState(testParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = saveState(statePath(r.Root), s); err != nil {
+		t.Fatal(err)
+	}
+	for _, pending := range []bool{false, true} {
+		s.FirewallPending = pending
+		if err = saveState(statePath(r.Root), s); err != nil {
+			t.Fatal(err)
+		}
+		result, err := r.manage(context.Background(), services.PanelRequest{Action: "panel-credentials"})
+		if err != nil || !strings.Contains(result.Text, s.AdminPassword) || !strings.Contains(result.TextRU, s.AdminPassword) {
+			t.Fatal("could not recover saved password", err)
+		}
+		if r.lock != nil || r.log != nil {
+			t.Fatal("reading credentials acquired an operation lock or created a log")
+		}
+		loaded, err := loadState(statePath(r.Root))
+		if err != nil || loaded.AdminPassword != s.AdminPassword || loaded.FirewallPending != pending {
+			t.Fatal("reading credentials changed the installation state", err)
+		}
 	}
 }
 func TestDatabaseBackupStreamsAndMarksCompletion(t *testing.T) {

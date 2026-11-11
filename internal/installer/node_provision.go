@@ -198,7 +198,7 @@ func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) 
 		if err := ValidateNodeInstall(p); err != nil {
 			return result, err
 		}
-		if strings.EqualFold(p.Domain, r.state.Params.PanelDomain) || strings.EqualFold(p.Domain, r.state.Params.SubscriptionDomain) {
+		if strings.EqualFold(p.Domain, r.state.Params.PanelDomain) || strings.EqualFold(p.Domain, r.state.Params.SubscriptionDomain) || strings.EqualFold(p.Domain, r.state.Params.AuthDomain) {
 			return result, errors.New("node and panel require different domains")
 		}
 		return r.prepareNodeSSH(ctx, "", p.SSH)
@@ -216,7 +216,7 @@ func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) 
 		if ip := net.ParseIP(p.SSH.Host); ip != nil {
 			p.SSH.Host = ip.String()
 		}
-		if strings.EqualFold(p.Domain, r.state.Params.PanelDomain) || strings.EqualFold(p.Domain, r.state.Params.SubscriptionDomain) {
+		if strings.EqualFold(p.Domain, r.state.Params.PanelDomain) || strings.EqualFold(p.Domain, r.state.Params.SubscriptionDomain) || strings.EqualFold(p.Domain, r.state.Params.AuthDomain) {
 			return result, errors.New("node and panel require different domains")
 		}
 		key, fingerprint, err := r.scanNodeSSH(ctx, p.SSH)

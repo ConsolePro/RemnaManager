@@ -106,3 +106,29 @@ func TestManagementOutputWrapsAndScrolls(t *testing.T) {
 		t.Fatal("cannot scroll wrapped log lines")
 	}
 }
+
+func TestPanelProtectionRequiresDomainAndConfirmation(t *testing.T) {
+	m := testModel(t, true)
+	service := &managedFake{}
+	m.service = service
+	next, _ := m.openPanelOperation(operation("Защита панели", "Panel protection", "panel-protection"))
+	m = next.(Model)
+	press(&m, tea.KeyDown)
+	press(&m, tea.KeyEnter)
+	m.inputs[0].SetValue("auth.panel.example.com")
+	press(&m, tea.KeyEnter)
+	if m.screen != "panelConfirm" || len(service.requests) != 0 {
+		t.Fatal("protection ran without confirmation")
+	}
+	press(&m, tea.KeyEsc)
+	if m.screen != "panelInput" {
+		t.Fatal("cannot correct authentication domain")
+	}
+	press(&m, tea.KeyEnter)
+	cmd := press(&m, tea.KeyEnter)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if len(service.requests) != 1 || service.requests[0].Protection != "tinyauth" || service.requests[0].Value != "auth.panel.example.com" {
+		t.Fatal("incorrect protection request")
+	}
+}

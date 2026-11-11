@@ -62,10 +62,13 @@ func TestWriteLiveStackFixture(t *testing.T) {
 	replace := func(text string) string {
 		return strings.ReplaceAll(strings.ReplaceAll(text, "127.0.0.1:3000", "remnawave:3000"), "127.0.0.1:3010", "subscription:3010")
 	}
-	if e = writeFile(filepath.Join(root, "nginx.conf"), []byte(replace(RenderNginx(p, true))), 0600); e != nil {
+	if e = writeFile(filepath.Join(root, "nginx.conf"), []byte(replace(RenderNginx(s, true))), 0600); e != nil {
 		t.Fatal(e)
 	}
-	caddy := strings.ReplaceAll(replace(RenderCaddy(p)), "{\n reverse_proxy", "{\n tls internal\n reverse_proxy")
+	caddy := replace(RenderCaddy(s))
+	for _, domain := range proxyDomains(p) {
+		caddy = strings.ReplaceAll(caddy, domain+" {", domain+" {\n tls internal")
+	}
 	if e = writeFile(filepath.Join(root, "Caddyfile"), []byte(caddy), 0600); e != nil {
 		t.Fatal(e)
 	}
@@ -153,6 +156,9 @@ func TestLiveProxyEndpoints(t *testing.T) {
 			req, e := http.NewRequestWithContext(ctx, "GET", target, nil)
 			if e != nil {
 				t.Fatal(e)
+			}
+			if req.URL.Host == s.Params.PanelDomain {
+				req.AddCookie(&http.Cookie{Name: s.CookieKey, Value: s.CookieValue})
 			}
 			resp, e := proxyClient.Do(req)
 			if e != nil {

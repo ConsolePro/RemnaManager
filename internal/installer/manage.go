@@ -73,14 +73,34 @@ func (r *Real) prepareManagement(ctx context.Context) error {
 
 func (r *Real) manage(ctx context.Context, request services.PanelRequest) (services.PanelResult, error) {
 	var result services.PanelResult
+	// Reading the saved password must also work after an interrupted install,
+	// without Docker, a complete stack or a long-running operation's lock.
+	if request.Action == "panel-credentials" {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		s, err := loadState(statePath(r.Root))
+		if err != nil {
+			return result, err
+		}
+		if s.Params.PanelDomain == "" {
+			return result, errors.New("no saved panel credentials were found")
+		}
+		result.Text = accessDetails(s, r.Root, false) + "\nCopy in terminal: Ctrl+Shift+C or the context menu."
+		result.TextRU = accessDetails(s, r.Root, true) + "\nКопирование в терминале: Ctrl+Shift+C или меню мыши."
+		return result, nil
+	}
 	if err := r.prepareManagement(ctx); err != nil {
 		return result, err
 	}
 	s := r.state
 	var err error
-	readOnly := request.Action == "panel-status" || request.Action == "panel-logs" || request.Action == "panel-credentials" || request.Action == "panel-backup"
+	readOnly := request.Action == "panel-status" || request.Action == "panel-logs" || request.Action == "panel-backup"
 	if !readOnly && (!s.Ready || s.FirewallPending) {
 		return result, errors.New("complete installation and confirm SSH access before managing components")
+	}
+	if !readOnly && s.ProtectionPending && request.Action != "panel-protection" {
+		return result, errors.New("resume Panel protection before managing components")
 	}
 	if !readOnly && s.RecoveryBackup != "" {
 		return result, fmt.Errorf("a backend update was interrupted; inspect logs and restore the database if needed before clearing RecoveryBackup; backup: %s", s.RecoveryBackup)
@@ -90,6 +110,12 @@ func (r *Real) manage(ctx context.Context, request services.PanelRequest) (servi
 	}
 	var data []byte
 	switch request.Action {
+	case "panel-protection":
+		err = r.changeProtection(ctx, request.Protection, request.Value)
+		if err == nil {
+			result.Text = accessDetails(r.state, r.Root, false)
+			result.TextRU = accessDetails(r.state, r.Root, true)
+		}
 	case "panel-status":
 		data, err = r.compose(ctx, "--profile", "subscription", "ps", "--all")
 		result.Text = fmt.Sprintf("Backend: %s\nSubscription image: %s\nPanel: https://%s\nSubscription: https://%s\n\n%s", s.BackendTag, s.SubImage, s.Params.PanelDomain, s.Params.SubscriptionDomain, r.safeOutput(data))
@@ -100,15 +126,16 @@ func (r *Real) manage(ctx context.Context, request services.PanelRequest) (servi
 			result.Text += "\nSubscription recovery pending: " + s.SubRecovery
 		}
 	case "panel-logs":
-		data, err = r.compose(ctx, "--profile", "subscription", "logs", "--tail", "100", "--no-color", "--timestamps", "remnawave", "subscription", "remnawave-db", "remnawave-redis")
+		data, err = r.compose(ctx, append([]string{"--profile", "subscription", "logs", "--tail", "100", "--no-color", "--timestamps"}, r.panelServices()...)...)
 		result.Text = r.safeOutput(data)
-	case "panel-credentials":
-		result.Text = fmt.Sprintf("https://%s\nAdmin: %s\nPassword: %s\nSubscription: https://%s/<shortUuid>\nCredentials: %s (0600)", s.Params.PanelDomain, s.Params.Admin, s.AdminPassword, s.Params.SubscriptionDomain, statePath(r.Root))
 	case "panel-stop":
-		_, err = r.compose(ctx, "--profile", "subscription", "stop", "subscription", "remnawave", "remnawave-db", "remnawave-redis")
+		_, err = r.compose(ctx, append([]string{"--profile", "subscription", "stop"}, r.panelServices()...)...)
 		result.Text = "Panel, subscription, database and cache stopped. Volumes, proxy, certificates and firewall preserved."
 	case "panel-start":
-		_, err = r.compose(ctx, "up", "-d", "--wait", "--wait-timeout", "240", "remnawave")
+		err = r.startProtection(ctx)
+		if err == nil {
+			_, err = r.compose(ctx, "up", "-d", "--wait", "--wait-timeout", "240", "remnawave")
+		}
 		if err == nil {
 			err = r.waitAPI(ctx)
 		}
@@ -166,8 +193,6 @@ func (r *Real) manage(ctx context.Context, request services.PanelRequest) (servi
 		result.TextRU = "Резервная копия БД и конфигурации:\n" + result.Text
 	case "panel-token":
 		result.TextRU = "Токен управления проверен и сохранён.\nТокен подписок не изменён. Старый токен управления не отозван."
-	case "panel-credentials":
-		result.TextRU = fmt.Sprintf("Панель: https://%s\nЛогин: %s\nСохранённый пароль: %s\nПодписка: https://%s/<shortUuid>\nФайл доступа: %s (0600)", s.Params.PanelDomain, s.Params.Admin, s.AdminPassword, s.Params.SubscriptionDomain, statePath(r.Root))
 	case "sub-start":
 		result.TextRU = "Страница подписки запущена и проверена:\nhttps://" + s.Params.SubscriptionDomain + "/<shortUuid>"
 	case "sub-stop":
@@ -184,7 +209,7 @@ func (r *Real) composeArgs(args ...string) []string {
 
 func (r *Real) safeOutput(data []byte) string {
 	text := ansi.Strip(string(data))
-	for _, secret := range []string{r.state.DBPassword, r.state.AppSecret, r.state.MetricsPassword, r.state.WebhookSecret, r.state.AdminPassword, r.state.ManagerToken, r.state.SubToken} {
+	for _, secret := range []string{r.state.DBPassword, r.state.AppSecret, r.state.MetricsPassword, r.state.WebhookSecret, r.state.AdminPassword, r.state.ManagerToken, r.state.SubToken, r.state.CookieKey, r.state.CookieValue, r.state.TinyPassword, r.state.TinyHash, r.state.MFAPassword, r.state.MFASigningKey} {
 		if secret != "" {
 			text = strings.ReplaceAll(text, secret, "[REDACTED]")
 		}
@@ -245,13 +270,25 @@ func (r *Real) backup(ctx context.Context) (string, error) {
 	if err = os.Rename(filepath.Join(directory, "database.dump.partial"), filepath.Join(directory, "database.dump")); err != nil {
 		return "", err
 	}
-	for _, name := range []string{"compose.json", ".env", "subscription.env"} {
+	names := []string{"compose.json", ".env", "subscription.env"}
+	if protectionMode(r.state.Params) == "tinyauth" {
+		names = append(names, "tinyauth.env")
+	}
+	if protectionMode(r.state.Params) == "mfa" {
+		names = append(names, "mfa.env", "mfa.Caddyfile")
+	}
+	for _, name := range names {
 		data, e := os.ReadFile(filepath.Join(r.Stack, name))
 		if e != nil {
 			return "", e
 		}
 		if e = writeFile(filepath.Join(directory, name), data, 0600); e != nil {
 			return "", e
+		}
+	}
+	if protectionMode(r.state.Params) == "mfa" {
+		if err = r.backupMFAUsers(ctx, directory); err != nil {
+			return "", fmt.Errorf("incomplete MFA identity backup retained at %s: %w", directory, err)
 		}
 	}
 	if err = saveState(statePath(directory), r.state); err != nil {

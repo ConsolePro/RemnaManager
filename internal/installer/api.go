@@ -174,25 +174,15 @@ func (r *Real) waitAPI(ctx context.Context) error {
 func (r *Real) waitHTTPS(ctx context.Context) error {
 	wait, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	targets := []string{"https://" + r.state.Params.PanelDomain + "/api/auth/status"}
-	for _, target := range targets {
-		for {
-			req, e := http.NewRequestWithContext(wait, "GET", target, nil)
-			if e != nil {
-				return e
-			}
-			resp, e := r.Client.Do(req)
-			if e == nil {
-				_ = resp.Body.Close()
-				if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-					break
-				}
-			}
-			select {
-			case <-wait.Done():
-				return fmt.Errorf("HTTPS check failed for %s; verify DNS, 80/443 and ACME", target)
-			case <-time.After(3 * time.Second):
-			}
+	for {
+		err := r.checkPanelProtection(wait)
+		if err == nil {
+			break
+		}
+		select {
+		case <-wait.Done():
+			return fmt.Errorf("public HTTPS/protection check failed: %w", err)
+		case <-time.After(3 * time.Second):
 		}
 	}
 	// A bare subscription URL intentionally closes its socket. Check its public

@@ -55,6 +55,13 @@ func (r *Real) Defaults() services.PanelParameters {
 	return p
 }
 
+// Installed reports the persisted installation result, not current service health.
+func (r *Real) Installed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.state.Ready && !r.state.FirewallPending && !r.state.ProtectionPending
+}
+
 func (r *Real) systemPath(path string) string {
 	if r.SystemRoot == "" {
 		return path
@@ -91,6 +98,12 @@ func (r *Real) Check(ctx context.Context) (string, error) {
 		return "", e
 	}
 	r.state = s
+	if s.ProtectionPending {
+		return "", errors.New("resume the pending configuration using Panel and components → Panel protection")
+	}
+	if s.Ready && !s.FirewallPending {
+		return "Installation already completed; saved credentials are available. Use component status to check running services.", nil
+	}
 	ports, e := DetectSSHPorts(ctx, r.Runner)
 	if e != nil {
 		return "", e
@@ -160,6 +173,9 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 		if s.SubRecovery != "" {
 			return errors.New("subscription recovery required; run Subscription page → Install / start first")
 		}
+		if s.ProtectionPending {
+			return errors.New("resume Panel protection before running the installer")
+		}
 		if s.Params.PanelDomain == "" {
 			s, e = newState(p)
 			if e != nil {
@@ -170,6 +186,10 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 			comparison := s.Params
 			comparison.Email = p.Email
 			comparison.SSHPorts = p.SSHPorts
+			if s.Params.Protection == "" {
+				comparison.Protection, comparison.AuthDomain = p.Protection, p.AuthDomain
+				s.Completed[2], s.Completed[6] = false, false
+			}
 			if !reflect.DeepEqual(comparison, p) {
 				return errors.New("resume with the saved domains, proxy and administrator; migration is not an overwrite")
 			}
@@ -182,6 +202,9 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 			s.Params = p
 		}
 		r.state = s
+		if err := ensureProtection(&r.state); err != nil {
+			return err
+		}
 		if r.log == nil {
 			f, e := os.CreateTemp(r.Root, "install-*.log")
 			if e != nil {
@@ -249,7 +272,9 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 			err = r.waitSubscription(ctx)
 		}
 	case 6:
-		err = r.configureProxy(ctx)
+		if err = r.startProtection(ctx); err == nil {
+			err = r.configureProxy(ctx)
+		}
 	case 7:
 		err = r.waitHTTPS(ctx)
 	case 8:
@@ -275,6 +300,20 @@ func (r *Real) configure() error {
 			return e
 		}
 	}
+	if protectionMode(r.state.Params) == "tinyauth" {
+		return writeFile(tinyEnvPath(r.Stack), renderTinyEnv(r.state), 0600)
+	}
+	if protectionMode(r.state.Params) == "mfa" {
+		if runtime.GOARCH == "arm64" {
+			if err := writeFile(filepath.Join(r.Stack, "mfa-build", "Dockerfile"), []byte(mfaDockerfile), 0600); err != nil {
+				return err
+			}
+		}
+		if err := writeFile(filepath.Join(r.Stack, "mfa.env"), renderMFAEnv(r.state), 0600); err != nil {
+			return err
+		}
+		return writeFile(filepath.Join(r.Stack, "mfa.Caddyfile"), []byte(RenderMFAGateway(r.state)), 0600)
+	}
 	return nil
 }
 func (r *Real) compose(ctx context.Context, args ...string) ([]byte, error) {
@@ -286,7 +325,7 @@ func (r *Real) Summary() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := r.state
-	return fmt.Sprintf("https://%s\nAdmin: %s\nPassword: %s\nSubscription: https://%s/<shortUuid>\nCredentials: %s (0600)\nLog: %s", s.Params.PanelDomain, s.Params.Admin, s.AdminPassword, s.Params.SubscriptionDomain, statePath(r.Root), r.LogPath)
+	return accessDetails(s, r.Root, false) + "\nLog: " + r.LogPath
 }
 func (r *Real) Close() error {
 	r.mu.Lock()
@@ -315,7 +354,7 @@ func (r *Real) preflight(ctx context.Context, p services.PanelParameters) error 
 			return errors.New("existing /opt/remnawave is not managed by this installer; refusing overwrite")
 		}
 	}
-	for _, domain := range []string{p.PanelDomain, p.SubscriptionDomain} {
+	for _, domain := range proxyDomains(p) {
 		ips, e := net.DefaultResolver.LookupIPAddr(ctx, domain)
 		if e != nil || len(ips) == 0 {
 			return fmt.Errorf("DNS is not ready for %s", domain)
@@ -348,7 +387,7 @@ func (r *Real) preflight(ctx context.Context, p services.PanelParameters) error 
 		}
 		_, port, _ := net.SplitHostPort(fields[3])
 		n, _ := strconv.Atoi(port)
-		if n != 80 && n != 443 && n != 3000 && n != 3010 {
+		if n != 80 && n != 443 && n != 3000 && n != 3010 && (n != 3020 || protectionMode(p) != "tinyauth") && (n != 3030 || protectionMode(p) != "mfa") {
 			continue
 		}
 		if !managed {

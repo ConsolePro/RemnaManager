@@ -33,6 +33,9 @@ func (m Model) openPanelOperation(selected item) (tea.Model, tea.Cmd) {
 	m.panelRequest = services.PanelRequest{Action: selected.action}
 	m.panelTitle = m.l(selected.ru, selected.en)
 	switch selected.action {
+	case "panel-protection":
+		m.screen = "panelProtection"
+		m.protectionChoice = 0
 	case "sub-custom":
 		m.screen = "panelCustom"
 		m.customChoice = 0
@@ -111,6 +114,21 @@ func (m Model) receivePanelResult(msg panelResultMsg) (tea.Model, tea.Cmd) {
 func (m Model) updatePanelScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	switch m.screen {
+	case "panelProtection":
+		switch key {
+		case "up", "down", "left", "right", "tab", "shift+tab":
+			m.moveProtectionChoice(key)
+		case "enter":
+			m.panelRequest.Protection = protectionChoices[m.protectionChoice]
+			if m.protectionChoice != 1 {
+				m.screen = "panelConfirm"
+			} else {
+				m.inputs = []textinput.Model{newInput("auth.panel.example.com", "")}
+				m.focus = 0
+				m.screen = "panelInput"
+				return m, m.inputs[0].Focus()
+			}
+		}
 	case "panelCustom":
 		switch key {
 		case "up", "left", "shift+tab":
@@ -139,6 +157,11 @@ func (m Model) updatePanelScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			value := strings.TrimSpace(m.inputs[0].Value())
 			var err error
 			switch m.panelRequest.Action {
+			case "panel-protection":
+				value = strings.ToLower(value)
+				if !installer.ValidDomain(value) {
+					err = fmt.Errorf("enter a TinyAuth domain such as auth.panel.example.com")
+				}
 			case "panel-update":
 				err = installer.ValidateBackendVersion(value)
 			case "sub-image":
@@ -178,6 +201,8 @@ func (m Model) updatePanelScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) panelScreenView() string {
 	title := accent.Render(m.panelTitle)
 	switch m.screen {
+	case "panelProtection":
+		return m.protectionOptionsView()
 	case "panelCustom":
 		choices := [][2]string{{"Официальный образ", "Official image"}, {"Свой совместимый Docker-образ", "Custom compatible Docker image"}, {"Subpage Builder в панели", "Subpage Builder in panel"}}
 		rows := []string{title, ""}
@@ -197,6 +222,9 @@ func (m Model) panelScreenView() string {
 		if m.panelRequest.Action == "sub-image" {
 			label = m.l("Docker-образ (API, порт 3010, HEALTHCHECK):", "Docker image (API, port 3010, HEALTHCHECK):")
 		}
+		if m.panelRequest.Action == "panel-protection" {
+			label = m.l("Домен TinyAuth (прямой поддомен панели, A/AAAA на сервер):", "TinyAuth domain (direct child of panel domain, DNS pointing here):")
+		}
 		text := title + "\n\n" + label + "\n" + m.inputs[0].View()
 		if m.panelRequest.Action == "panel-update" {
 			text += "\n\nhttps://github.com/remnawave/backend/releases"
@@ -209,6 +237,11 @@ func (m Model) panelScreenView() string {
 		}
 		description := m.l("Операция изменит компоненты управляемого стека.", "This operation changes components in the managed stack.")
 		switch m.panelRequest.Action {
+		case "panel-protection":
+			description = m.l("Будет включена защита: ", "Enable protection: ") + m.panelRequest.Protection + "\n" + m.l("Сервисы панели будут запущены, прокси перенастроен.\nДанные дополнительного входа будут сохранены и показаны.\nПароль панели не меняется.\nПри повторе после ошибки выберите тот же режим и домен.", "Panel services will be started and the proxy reconfigured.\nThe additional login credentials will be saved and shown.\nThe panel password is unchanged.\nAfter an error retry the same mode and domain.")
+			if m.panelRequest.Protection == "mfa" {
+				description += "\n" + m.l("При первом входе в /r обязательна настройка второго фактора.", "First login at /r requires enrolling a second factor.")
+			}
 		case "panel-update":
 			description = m.l("Перед обновлением будет сохранена копия PostgreSQL и конфигурации.\nВозможны миграции БД и краткая недоступность панели.\nОткат миграций автоматически не выполняется.", "A PostgreSQL and configuration backup will be created first.\nDatabase migrations and brief downtime are possible.\nDatabase migrations are not rolled back automatically.")
 			description += "\n\nhttps://github.com/remnawave/backend/releases/tag/" + m.panelRequest.Value

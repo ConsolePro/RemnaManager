@@ -21,7 +21,7 @@ def child_setup():
 
 
 process = subprocess.Popen(
-    ["/usr/local/bin/remna"], stdin=slave, stdout=slave, stderr=slave,
+    ["/usr/local/bin/remanager"], stdin=slave, stdout=slave, stderr=slave,
     preexec_fn=child_setup, env={**os.environ, "TERM": "xterm-256color"},
 )
 output = bytearray()

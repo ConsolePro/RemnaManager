@@ -2,8 +2,8 @@
 # Go TUI preview installer. Does not modify Remnawave components.
 set -Eeuo pipefail
 umask 077
-fail() { printf 'remna: %s\n' "$*" >&2; exit 1; }
-trap 'printf "remna: установка прервана (строка %s).\n" "$LINENO" >&2' ERR
+fail() { printf 'remanager: %s\n' "$*" >&2; exit 1; }
+trap 'printf "remanager: установка прервана (строка %s).\n" "$LINENO" >&2' ERR
 [[ $(uname -s) == Linux && $EUID == 0 ]] || fail 'Нужен Linux и запуск от root (sudo bash).'
 [[ -r /etc/os-release ]] || fail 'Не найден /etc/os-release.'
 # shellcheck disable=SC1091
@@ -84,9 +84,28 @@ printf 'Сборка Go TUI preview…\n'
     "$go_bin" build -mod=readonly -trimpath -o "$temporary/remna" ./cmd/remna
 )
 "$temporary/remna" --version
-install -m 0755 "$temporary/remna" /usr/local/bin/.remna.new
-mv -f -- /usr/local/bin/.remna.new /usr/local/bin/remna
-ln -sfn remna /usr/local/bin/remna_manager
-ln -sfn remna /usr/local/bin/re
+# Keep the manager executable outside the panel's command namespace.
+for shortcut in remanager re; do
+    path=/usr/local/bin/$shortcut
+    if [[ -e $path || -L $path ]]; then
+        target=$(readlink "$path" || true)
+        case "$target" in remna|remanager|../lib/remnamanager/remanager) ;;
+            *) fail "Команда $path уже занята другим файлом. Она не перезаписана.";;
+        esac
+    fi
+done
+install -m 0755 "$temporary/remna" /usr/local/lib/remnamanager/.remanager.new
+mv -f -- /usr/local/lib/remnamanager/.remanager.new /usr/local/lib/remnamanager/remanager
+ln -sfn ../lib/remnamanager/remanager /usr/local/bin/remanager
+ln -sfn remanager /usr/local/bin/re
+# Migrate only the old Go manager, identified by embedded Go module metadata.
+# A remna command belonging to the panel or another program is left intact.
+if [[ -f /usr/local/bin/remna && ! -L /usr/local/bin/remna ]] &&
+    "$go_bin" version -m /usr/local/bin/remna 2>/dev/null | awk '$1=="path" && $2=="github.com/ConsolePro/RemnaManager/cmd/remna" { found=1 } END { exit !found }'; then
+    mv -f -- /usr/local/bin/remna /usr/local/lib/remnamanager/remna.previous
+fi
+if [[ -L /usr/local/bin/remna_manager && $(readlink /usr/local/bin/remna_manager) == remna ]]; then
+    ln -sfn remanager /usr/local/bin/remna_manager
+fi
 install -d -m 0700 /etc/remnamanager
-printf '\nGo TUI preview установлен. Запуск: sudo remna\nНастройки: /etc/remnamanager/config.json (существующий файл сохранён).\n'
+printf '\nGo TUI preview установлен. Запуск меню управления: sudo re или sudo remanager\nНастройки: /etc/remnamanager/config.json (существующий файл сохранён).\n'

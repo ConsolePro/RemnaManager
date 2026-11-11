@@ -65,6 +65,7 @@ type Model struct {
 	scroll                                             int
 	logs                                               []string
 	proxyChoice                                        int
+	protectionChoice                                   int
 	installCtx                                         context.Context
 	installCancel                                      context.CancelFunc
 	panelRequest                                       services.PanelRequest
@@ -198,9 +199,11 @@ func (m *Model) back() {
 		m.screen = "notice"
 		m.notice = m.l("Операция отменяется. Выполненные изменения сохраняются; проверьте статус и приватный журнал.", "Operation is being cancelled. Completed changes remain; inspect status and the private log.")
 	case "panelConfirm":
-		if m.panelRequest.Action == "sub-image" && m.customChoice == 0 {
+		if m.panelRequest.Action == "panel-protection" && m.panelRequest.Protection != "tinyauth" {
+			m.screen = "panelProtection"
+		} else if m.panelRequest.Action == "sub-image" && m.customChoice == 0 {
 			m.screen = "panelCustom"
-		} else if len(m.inputs) > 0 && (m.panelRequest.Action == "panel-token" || m.panelRequest.Action == "panel-update" || m.panelRequest.Action == "sub-image") {
+		} else if len(m.inputs) > 0 && (m.panelRequest.Action == "panel-token" || m.panelRequest.Action == "panel-update" || m.panelRequest.Action == "sub-image" || m.panelRequest.Action == "panel-protection") {
 			m.screen = "panelInput"
 			m.inputs[0].Focus()
 		} else {
@@ -222,12 +225,22 @@ func (m *Model) back() {
 		m.screen = "menu"
 	case "domains":
 		if m.liveInstall() {
-			m.screen = "installOptions"
+			m.screen = "protectionOptions"
 		} else {
 			m.screen = "environment"
 		}
 	case "installOptions":
 		m.screen = "environment"
+	case "protectionOptions":
+		m.screen = "installOptions"
+	case "panelProtection":
+		m.screen = "menu"
+	case "panelInput":
+		if m.panelRequest.Action == "panel-protection" {
+			m.screen = "panelProtection"
+		} else {
+			m.screen = "menu"
+		}
 	case "confirm":
 		m.screen = "domains"
 		m.inputs[m.focus].Focus()
@@ -299,6 +312,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.environment = msg.info
 		if msg.err != nil {
 			m.problem = msg.err.Error()
+		} else if s, ok := m.liveInstaller(); ok && s.Installed() {
+			m.screen = "installResult"
 		}
 	case stepMsg:
 		if msg.run != m.run || m.screen != "progress" {
@@ -326,11 +341,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyMsg:
 		key := msg.String()
-		if key == "ctrl+c" {
-			m.cancelInstall()
-			return m, tea.Quit
-		}
-		if key == "f1" {
+		if key == "ctrl+c" || key == "f1" {
 			m.exitConfirm = !m.exitConfirm
 			m.exitYes = false
 			return m, nil
@@ -414,7 +425,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateNodeInstallScreen(msg)
 		case "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesResult":
 			return m.updateNodeScreen(msg)
-		case "panelInput", "panelConfirm", "panelResult", "panelCustom":
+		case "panelInput", "panelConfirm", "panelResult", "panelCustom", "panelProtection":
 			return m.updatePanelScreen(msg)
 		case "language":
 			switch key {
@@ -496,10 +507,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.screen = "menu"
 			}
 		case "installOptions":
-			if key == "left" || key == "right" || key == "up" || key == "down" {
+			if key == "left" || key == "right" || key == "up" || key == "down" || key == "tab" || key == "shift+tab" {
 				m.proxyChoice = 1 - m.proxyChoice
 			}
 			if key == "enter" {
+				m.screen = "protectionOptions"
+			}
+		case "protectionOptions":
+			if key == "left" || key == "right" || key == "up" || key == "down" || key == "tab" || key == "shift+tab" {
+				m.moveProtectionChoice(key)
+			}
+			if key == "enter" {
+				m.prepareProtectionInput()
 				m.screen = "domains"
 				return m, m.inputs[0].Focus()
 			}

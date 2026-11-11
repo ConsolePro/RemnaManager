@@ -9,6 +9,7 @@ import (
 type PanelParameters struct {
 	PanelDomain, SubscriptionDomain string
 	Proxy, Email, Admin             string
+	Protection, AuthDomain          string
 	SSHPorts                        []int
 }
 
@@ -17,6 +18,7 @@ type PanelParameters struct {
 type LivePanelInstaller interface {
 	PanelInstaller
 	Defaults() PanelParameters
+	Installed() bool
 	Summary() string
 	Confirm(context.Context) error
 	Close() error
@@ -29,6 +31,7 @@ type PanelInstaller interface {
 
 type PanelRequest struct {
 	Action, Value string
+	Protection    string
 }
 
 type PanelResult struct {

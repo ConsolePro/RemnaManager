@@ -116,12 +116,14 @@ func (m Model) body() string {
 		return strings.Join(rows, "\n")
 	case "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesProgress", "nodesResult":
 		return m.nodesView()
-	case "panelInput", "panelConfirm", "panelProgress", "panelResult", "panelCustom":
+	case "panelInput", "panelConfirm", "panelProgress", "panelResult", "panelCustom", "panelProtection":
 		return m.panelScreenView()
 	case "notice":
 		return m.notice + "\n\n" + m.l("Enter / Esc — в меню", "Enter / Esc — return to menu")
 	case "installOptions":
 		return m.installOptionsView()
+	case "protectionOptions":
+		return m.protectionOptionsView()
 	case "firewallVerify":
 		if m.saving {
 			return m.l("Сохраняем подтверждённые правила…", "Saving confirmed firewall rules…")
@@ -130,7 +132,7 @@ func (m Model) body() string {
 		return warning.Render(m.l("ПРОВЕРЬТЕ SSH ВО ВТОРОЙ СЕССИИ", "VERIFY SSH IN A SECOND SESSION")) + "\n\n" + m.l("Откройте новое SSH-подключение и проверьте HTTPS панели.\nEnter — подтвердить доступ и сохранить firewall.\nБез подтверждения правила автоматически отменятся через 120 секунд.\nEsc — оставить автоматический откат.", "Open a new SSH connection and verify the panel's HTTPS.\nEnter — confirm access and persist the firewall.\nWithout confirmation the rules roll back after 120 seconds.\nEsc — leave automatic rollback armed.") + "\n\n" + s.Summary()
 	case "installResult":
 		s, _ := m.liveInstaller()
-		return accent.Render(m.l("Панель и подписка установлены", "Panel and subscription installed")) + "\n\n" + s.Summary() + "\n\n" + m.l("Enter — в меню", "Enter — return to menu")
+		return accent.Render(m.l("Установка панели и подписки завершена", "Panel and subscription installation completed")) + "\n\n" + s.Summary() + "\n\n" + m.l("Повторный просмотр: Панель и компоненты → Доступ к панели.\nКопирование в терминале: Ctrl+Shift+C или меню мыши.\nCtrl+C — выход с подтверждением.\nEnter — в меню", "View again: Panel and components → Panel credentials.\nCopy in terminal: Ctrl+Shift+C or the context menu.\nCtrl+C — exit with confirmation.\nEnter — return to menu")
 	}
 	return ""
 }
