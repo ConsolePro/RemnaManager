@@ -51,8 +51,27 @@ func TestNodeV2AgentWebsiteRenewalAndCustomPort(t *testing.T) {
 			t.Fatal("remote stage", stage, err)
 		}
 	}
-	for _, stage := range []int{0, 1, 2, 3} {
-		run(stage)
+	// Exercise the actual Go dispatcher, including logical stage 3 -> agent 2.
+	// Profile/node API creation has its own real-backend integration test.
+	if err := r.runNodeStage(ctx, &j, 0); err != nil {
+		t.Fatal(err)
+	}
+	j.Completed[1] = true
+	for _, stage := range []int{2, 3} {
+		if err := r.runNodeStage(ctx, &j, stage); err != nil {
+			t.Fatal("Go stage dispatcher", stage, err)
+		}
+	}
+	if _, err := os.Stat("/var/lib/remnamanager-node/ssl/fullchain.pem"); !os.IsNotExist(err) {
+		t.Fatal("certificate deployment ran during image pinning")
+	}
+	if j.Image == "" {
+		t.Fatal("image was not pinned before deployment")
+	}
+	if err := r.runNodeStage(ctx, &j, 4); err != nil {
+		log, _ := os.ReadFile("/var/lib/remnamanager-node/install.log")
+		t.Log(strings.ReplaceAll(string(log), j.Secret, "[REDACTED]"))
+		t.Fatal("deployment stage", err)
 	}
 	certPath := "/var/lib/remnamanager-node/ssl/fullchain.pem"
 	certificate, err := os.ReadFile(certPath)

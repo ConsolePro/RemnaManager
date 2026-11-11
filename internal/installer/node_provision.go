@@ -638,7 +638,7 @@ func (r *Real) runNodeStage(ctx context.Context, j *NodeJob, stage int) error {
 				return err
 			}
 		}
-		data, err := r.runNodeAgent(ctx, *j, stage)
+		data, err := r.runNodeAgent(ctx, *j, actionStage)
 		if err != nil {
 			return err
 		}
