@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -89,6 +90,24 @@ func managementFixture(t *testing.T) (*Real, *managementRunner) {
 	t.Helper()
 	r := NewReal()
 	r.Root = t.TempDir()
+	if runtime.GOOS == "linux" {
+		// t.TempDir includes the test/subtest name. Long names can exceed the
+		// Unix socket path limit, unrelated to the operation being tested.
+		root, err := os.MkdirTemp(os.TempDir(), "rmgo-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Root = root
+		t.Cleanup(func() {
+			if filepath.Dir(root) != filepath.Clean(os.TempDir()) || !strings.HasPrefix(filepath.Base(root), "rmgo-") {
+				t.Error("unexpected fixture cleanup path")
+				return
+			}
+			if err := os.RemoveAll(root); err != nil {
+				t.Error(err)
+			}
+		})
+	}
 	r.Stack = t.TempDir()
 	r.state, _ = newState(testParams())
 	r.state.BackendTag = "3.4.9"
