@@ -96,6 +96,8 @@ type Model struct {
 	nodeCursor                                         int
 	nodeCoreVersions                                   []string
 	nodeCoreCursor                                     int
+	nodeBrowser                                        bool
+	nodeActionCursor                                   int
 	nodeTarget                                         services.Node
 	nodeSSH                                            services.NodeSSH
 	nodeSSHChanged                                     bool
@@ -164,6 +166,35 @@ func (m *Model) startSettings(editing bool) {
 	m.problem = ""
 }
 func (m *Model) back() {
+	if m.nodeBrowser && strings.HasPrefix(m.screen, "nodes") {
+		m.cancelInstall()
+		m.run++
+		m.problem, m.scroll = "", 0
+		switch m.screen {
+		case "nodesList":
+			m.screen, m.nodeBrowser = "menu", false
+		case "nodesCard":
+			m.screen, m.nodeAction = "nodesList", "nodes-list"
+			m.nodeTitle = m.l("Ноды и расширения", "Nodes and extensions")
+		case "nodesProgress":
+			if m.nodeTarget.UUID == "" {
+				if len(m.nodeList) == 0 {
+					m.screen, m.nodeBrowser = "menu", false
+				} else {
+					m.screen = "nodesList"
+				}
+			} else {
+				m.screen = "nodesCard"
+			}
+		default:
+			if m.nodeTarget.UUID == "" {
+				m.screen = "nodesList"
+			} else {
+				m.screen = "nodesCard"
+			}
+		}
+		return
+	}
 	m.problem = ""
 	m.scroll = 0
 	switch m.screen {
@@ -423,6 +454,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if key == "esc" {
+			if m.nodeBrowser && m.screen == "nodesResult" && m.nodeTarget.UUID != "" {
+				return m.startNodeRequest(services.NodeRequest{Action: "node-details", UUID: m.nodeTarget.UUID})
+			}
 			m.back()
 			return m, nil
 		}
@@ -486,7 +520,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateNodeInstallScreen(msg)
 		case "managerInput", "managerConfirm", "managerResult":
 			return m.updateManagerScreen(msg)
-		case "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesResult", "nodesCoreVersions":
+		case "nodesList", "nodesCard", "nodesInput", "nodesTrust", "nodesConfirm", "nodesResult", "nodesCoreVersions":
 			return m.updateNodeScreen(msg)
 		case "panelInput", "panelConfirm", "panelResult", "panelCustom", "panelProtection":
 			return m.updatePanelScreen(msg)

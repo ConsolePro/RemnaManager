@@ -37,6 +37,10 @@ func (r *Real) manageNodeCore(ctx context.Context, request services.NodeRequest,
 	result := services.NodeResult{}
 	rollback := strings.HasPrefix(request.Action, "node-core-rollback-")
 	action := strings.Replace(request.Action, "node-core-rollback-", "node-core-", 1)
+	unified := action == "node-core-check"
+	if unified {
+		action = "node-core-prepare"
+	}
 	switch action {
 	case "node-core-prepare":
 		if j.CoreUpdateID != "" {
@@ -77,11 +81,24 @@ func (r *Real) manageNodeCore(ctx context.Context, request services.NodeRequest,
 			return result, err
 		}
 		if !updater.Newer(release.Version, current) {
-			return coreUpToDate(current, release.Version), nil
+			result = coreUpToDate(current, release.Version)
+			if unified {
+				releases, err := catalog.List(ctx)
+				if err != nil {
+					return services.NodeResult{}, err
+				}
+				for _, previous := range releases {
+					if updater.Newer(current, previous.Version) {
+						result.Versions = append(result.Versions, previous.Version)
+					}
+				}
+				result.NoChange = len(result.Versions) == 0
+			}
+			return result, nil
 		}
 		result.Version = release.Version
 		result.Text = "Xray " + current + " → " + release.Version
-		result.TextRU = result.Text
+		result.TextRU = "Доступна новая версия Xray: " + release.Version + "\nТекущая версия: " + current
 		return result, nil
 	case "node-core-auth":
 		return r.nodeProvision(ctx, services.NodeRequest{Action: "node-install-auth", JobID: j.ID})
@@ -129,7 +146,7 @@ func (r *Real) manageNodeCore(ctx context.Context, request services.NodeRequest,
 }
 
 func currentCoreVersion(node services.Node) (string, error) {
-	version := "v" + strings.TrimPrefix(strings.TrimSpace(node.XrayVersion), "v")
+	version := "v" + strings.TrimPrefix(strings.TrimSpace(node.CoreVersion()), "v")
 	if !updater.TagPattern.MatchString(version) {
 		return "", services.LocalizedError("Панель не сообщила текущую версию Xray. Обновление отменено; восстановите подключение ноды и повторите проверку.", "The panel did not report the current Xray version. Restore the node connection and check again.")
 	}
@@ -280,12 +297,8 @@ func (r *Real) waitNodeCore(ctx context.Context, j NodeJob) error {
 	for {
 		raw, err := r.nodeAPI(wait, "GET", "/nodes/"+j.NodeUUID, nil)
 		if err == nil {
-			var node struct {
-				IsConnected bool   `json:"isConnected"`
-				IsDisabled  bool   `json:"isDisabled"`
-				Version     string `json:"xrayVersion"`
-			}
-			if json.Unmarshal(raw, &node) == nil && node.IsConnected && !node.IsDisabled && strings.TrimPrefix(node.Version, "v") == strings.TrimPrefix(j.CoreTargetVersion, "v") {
+			var node services.Node
+			if json.Unmarshal(raw, &node) == nil && node.IsConnected && !node.IsDisabled && strings.TrimPrefix(node.CoreVersion(), "v") == strings.TrimPrefix(j.CoreTargetVersion, "v") {
 				return nil
 			}
 		}

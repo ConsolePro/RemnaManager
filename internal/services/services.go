@@ -3,6 +3,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -54,6 +55,31 @@ type Node struct {
 	IsConnected bool   `json:"isConnected"`
 	IsDisabled  bool   `json:"isDisabled"`
 	XrayVersion string `json:"xrayVersion"`
+	NodeVersion string `json:"nodeVersion"`
+	Versions    *struct {
+		Xray string `json:"xray"`
+		Node string `json:"node"`
+	} `json:"versions"`
+	XrayUptime *json.Number `json:"xrayUptime"`
+	System     *struct {
+		Stats struct {
+			Uptime *json.Number `json:"uptime"`
+		} `json:"stats"`
+	} `json:"system"`
+}
+
+func (n Node) CoreVersion() string {
+	if n.Versions != nil && n.Versions.Xray != "" {
+		return n.Versions.Xray
+	}
+	return n.XrayVersion
+}
+
+func (n Node) AgentVersion() string {
+	if n.Versions != nil && n.Versions.Node != "" {
+		return n.Versions.Node
+	}
+	return n.NodeVersion
 }
 
 type NodeSSH struct {

@@ -144,7 +144,7 @@ func TestXrayUpdateRecoveryAndImagePreservation(t *testing.T) {
 					}
 					data = []byte("<html>website</html>")
 				} else {
-					data, _ = json.Marshal(map[string]any{"response": map[string]any{"uuid": j.NodeUUID, "isConnected": true, "isDisabled": false, "xrayVersion": strings.TrimPrefix(target, "v")}})
+					data, _ = json.Marshal(map[string]any{"response": map[string]any{"uuid": j.NodeUUID, "isConnected": true, "isDisabled": false, "versions": map[string]string{"xray": strings.TrimPrefix(target, "v"), "node": "2.7.0"}}})
 				}
 				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(data))), Header: headers}, nil
 			})

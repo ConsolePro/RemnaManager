@@ -43,7 +43,7 @@ func (r *Real) manageNodes(ctx context.Context, request services.NodeRequest) (s
 	if err := r.prepareManagement(ctx); err != nil {
 		return result, err
 	}
-	readOnly := request.Action == "nodes-list" || request.Action == "node-status" || request.Action == "node-ssh-settings" || request.Action == "node-install-pending" || request.Action == "node-install-load"
+	readOnly := request.Action == "nodes-list" || request.Action == "node-details" || request.Action == "node-status" || request.Action == "node-ssh-settings" || request.Action == "node-install-pending" || request.Action == "node-install-load"
 	if !readOnly {
 		if err := nodeReadinessError(r.state); err != nil {
 			return result, err
@@ -103,6 +103,14 @@ func (r *Real) manageNodes(ctx context.Context, request services.NodeRequest) (s
 		return result, errors.New("unexpected node detail response")
 	}
 	request.UUID = node.UUID
+	node.Name = r.safeOutput([]byte(node.Name))
+	node.Address = r.safeOutput([]byte(node.Address))
+	node.XrayVersion = r.safeOutput([]byte(node.XrayVersion))
+	node.NodeVersion = r.safeOutput([]byte(node.NodeVersion))
+	if node.Versions != nil {
+		node.Versions.Xray = r.safeOutput([]byte(node.Versions.Xray))
+		node.Versions.Node = r.safeOutput([]byte(node.Versions.Node))
+	}
 	if strings.HasPrefix(request.Action, "node-core-") {
 		return r.manageNodeCore(ctx, request, node)
 	}
@@ -142,6 +150,19 @@ func (r *Real) manageNodes(ctx context.Context, request services.NodeRequest) (s
 		return r.manageNodeUpdate(ctx, request, node)
 	}
 	switch request.Action {
+	case "node-details":
+		result.Nodes = []services.Node{node}
+	case "node-delete":
+		if request.Value != node.UUID {
+			return result, errors.New("confirm the exact node UUID before removal")
+		}
+		_, err = r.nodeAPI(ctx, "DELETE", "/nodes/"+node.UUID, nil)
+		if err == nil {
+			delete(r.state.NodeSSH, node.UUID)
+			err = saveState(statePath(r.Root), r.state)
+			result.Text = "Node removed from the panel."
+			result.TextRU = "Нода удалена из панели."
+		}
 	case "node-status":
 		state, stateRU := "offline", "не в сети"
 		if node.IsDisabled {

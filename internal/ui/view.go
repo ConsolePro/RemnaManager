@@ -136,7 +136,7 @@ func (m Model) body() string {
 			rows = append(rows, "", accent.Render(m.l("Демонстрация завершена. Enter — в меню.", "Demonstration complete. Enter — return to menu.")))
 		}
 		return strings.Join(rows, "\n")
-	case "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesProgress", "nodesResult", "nodesCoreVersions":
+	case "nodesList", "nodesCard", "nodesInput", "nodesTrust", "nodesConfirm", "nodesProgress", "nodesResult", "nodesCoreVersions":
 		return m.nodesView()
 	case "panelInput", "panelConfirm", "panelProgress", "panelResult", "panelCustom", "panelProtection":
 		return m.panelScreenView()
@@ -177,6 +177,9 @@ func (m Model) View() string {
 	width := m.width - 6
 	header := m.serverHeader(time.Now())
 	top := header + "\n\n" + m.classicStatsView()
+	if m.nodeBrowser && strings.HasPrefix(m.screen, "nodes") {
+		top = header
+	}
 	if m.nodeConnectWizard && (m.screen == "nodeConnectInput" || m.screen == "nodeDetailsInput" || m.screen == "nodeCountry" || m.screen == "nodeSite" || m.screen == "nodesTrust" || m.screen == "nodeInstallConfirm") {
 		top = header
 		if m.height < 28 {
@@ -214,8 +217,14 @@ func (m Model) View() string {
 		} else if cursor < vp.YOffset {
 			vp.SetYOffset(cursor)
 		}
-	} else if m.screen == "nodesCoreVersions" {
-		cursor := 5 + min(m.nodeCoreCursor, 3)
+	} else if m.screen == "nodesCoreVersions" || m.screen == "nodesCard" {
+		cursor := 0
+		for i, line := range lines {
+			if strings.HasPrefix(ansi.Strip(line), "› ") {
+				cursor = i
+				break
+			}
+		}
 		if cursor >= vp.YOffset+vp.Height {
 			vp.SetYOffset(cursor - vp.Height + 1)
 		} else if cursor < vp.YOffset {
@@ -271,6 +280,8 @@ func (m Model) View() string {
 	switch m.screen {
 	case "nodesCoreVersions":
 		hint = m.l("↑↓ — версия · Enter — выбрать · Esc — назад", "↑↓ — version · Enter — select · Esc — back")
+	case "nodesCard":
+		hint = m.l("↑↓ — действие · Enter — выбрать · R — обновить · Esc — список нод", "↑↓ — action · Enter — select · R — refresh · Esc — nodes")
 	case "nodeInstallInput":
 		hint = m.l("Tab — поле · Enter — далее · Esc — назад", "Tab — field · Enter — next · Esc — back")
 	case "nodeInstallPending":

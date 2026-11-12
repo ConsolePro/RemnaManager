@@ -30,6 +30,8 @@ func (m Model) openNodeOperation(selected item) (tea.Model, tea.Cmd) {
 		return m.openNodeInstall(selected)
 	}
 	m.nodeConnectWizard = false
+	m.nodeBrowser = selected.action == "nodes-list"
+	m.nodeTarget = services.Node{}
 	m.nodeAction = selected.action
 	m.nodeTitle = m.l(selected.ru, selected.en)
 	m.nodeList = nil
@@ -143,9 +145,20 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch msg.action {
+	case "node-details":
+		if len(msg.result.Nodes) != 1 {
+			m.screen, m.problem = "nodesResult", m.l("Панель не вернула данные ноды.", "The panel did not return node details.")
+			return m, nil
+		}
+		m.nodeTarget = msg.result.Nodes[0]
+		m.nodeTitle = m.l("Управление нодой", "Manage node")
+		m.screen = "nodesCard"
 	case "nodes-list":
 		m.nodeList = msg.result.Nodes
-		m.nodeCursor = min(m.nodeCursor, max(0, len(m.nodeList)-1))
+		m.nodeCursor = min(m.nodeCursor, max(0, m.nodeListCount()-1))
+		if m.nodeBrowser {
+			m.nodeTitle = m.l("Ноды и расширения", "Nodes and extensions")
+		}
 		m.screen = "nodesList"
 	case "node-ssh-settings":
 		m.nodeSSH = msg.result.SSH
@@ -166,18 +179,22 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 		return m.startNodeRequest(services.NodeRequest{Action: "node-site-run", UUID: m.nodeTarget.UUID, Value: m.nodeRequest.Value})
 	case "node-update-auth", "node-reinstall-auth", "node-update-authenticated", "node-reinstall-authenticated":
 		return m.startNodeRequest(services.NodeRequest{Action: strings.TrimSuffix(strings.TrimSuffix(msg.action, "-authenticated"), "-auth") + "-run", UUID: m.nodeTarget.UUID})
-	case "node-core-prepare", "node-core-rollback-prepare", "node-ssh-prepare", "node-update-prepare", "node-reinstall-prepare":
-		if msg.action == "node-core-prepare" || msg.action == "node-core-rollback-prepare" || msg.action == "node-update-prepare" || msg.action == "node-reinstall-prepare" {
+	case "node-core-check", "node-core-prepare", "node-core-rollback-prepare", "node-ssh-prepare", "node-update-prepare", "node-reinstall-prepare":
+		if msg.action == "node-core-check" || msg.action == "node-core-prepare" || msg.action == "node-core-rollback-prepare" || msg.action == "node-update-prepare" || msg.action == "node-reinstall-prepare" {
 			m.panelResult = msg.result.Text
 			if m.cfg.Language != "en" && msg.result.TextRU != "" {
 				m.panelResult = msg.result.TextRU
 			}
 		}
-		if msg.action == "node-core-rollback-prepare" && len(msg.result.Versions) > 0 {
+		if (msg.action == "node-core-check" || msg.action == "node-core-rollback-prepare") && len(msg.result.Versions) > 0 {
+			m.nodeAction = "node-core-rollback"
 			m.nodeCoreVersions = msg.result.Versions
 			m.nodeCoreCursor = 0
 			m.screen = "nodesCoreVersions"
 			return m, nil
+		}
+		if msg.action == "node-core-check" {
+			m.nodeAction = "node-core"
 		}
 		if msg.action != "node-ssh-prepare" {
 			m.nodeRequest = services.NodeRequest{Action: m.nodeAction + "-auth", UUID: m.nodeTarget.UUID, Value: msg.result.Version}
@@ -194,6 +211,16 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 		m.screen = "nodesTrust"
 		return m, m.inputs[0].Focus()
 	default:
+		if msg.action == "node-delete" && m.nodeBrowser {
+			for i, node := range m.nodeList {
+				if node.UUID == m.nodeTarget.UUID {
+					m.nodeList = append(m.nodeList[:i], m.nodeList[i+1:]...)
+					break
+				}
+			}
+			m.nodeTarget = services.Node{}
+			m.nodeCursor = min(m.nodeCursor, max(0, m.nodeListCount()-1))
+		}
 		m.screen = "nodesResult"
 		m.panelResult = msg.result.Text
 		if m.cfg.Language != "en" && msg.result.TextRU != "" {
@@ -212,6 +239,18 @@ func (m *Model) prepareNodeSSHInputs() {
 func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	switch m.screen {
+	case "nodesCard":
+		actions := nodeCardActions()
+		switch key {
+		case "up", "shift+tab":
+			m.nodeActionCursor = (m.nodeActionCursor + len(actions) - 1) % len(actions)
+		case "down", "tab":
+			m.nodeActionCursor = (m.nodeActionCursor + 1) % len(actions)
+		case "r", "R":
+			return m.startNodeRequest(services.NodeRequest{Action: "node-details", UUID: m.nodeTarget.UUID})
+		case "enter", "right":
+			return m.beginNodeAction(actions[m.nodeActionCursor])
+		}
 	case "nodesCoreVersions":
 		if len(m.nodeCoreVersions) == 0 {
 			return m, nil
@@ -231,18 +270,31 @@ func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "nodesList":
 		switch key {
 		case "up", "shift+tab":
-			if len(m.nodeList) > 0 {
-				m.nodeCursor = (m.nodeCursor + len(m.nodeList) - 1) % len(m.nodeList)
+			if m.nodeListCount() > 0 {
+				m.nodeCursor = (m.nodeCursor + m.nodeListCount() - 1) % m.nodeListCount()
 			}
 		case "down", "tab":
-			if len(m.nodeList) > 0 {
-				m.nodeCursor = (m.nodeCursor + 1) % len(m.nodeList)
+			if m.nodeListCount() > 0 {
+				m.nodeCursor = (m.nodeCursor + 1) % m.nodeListCount()
 			}
 		case "r", "R":
 			return m.startNodeRequest(services.NodeRequest{Action: "nodes-list"})
 		case "left":
 			m.back()
 		case "enter", "right":
+			if m.nodeBrowser {
+				if m.nodeCursor >= len(m.nodeList) {
+					action := "node-install-add"
+					if m.nodeCursor > len(m.nodeList) {
+						action = "node-install-pending"
+					}
+					m.nodeBrowser = false
+					return m.openNodeOperation(operation("Ноды", "Nodes", action))
+				}
+				m.nodeTarget = m.nodeList[m.nodeCursor]
+				m.nodeActionCursor = 0
+				return m.startNodeRequest(services.NodeRequest{Action: "node-details", UUID: m.nodeTarget.UUID})
+			}
 			if len(m.nodeList) == 0 {
 				return m, nil
 			}
@@ -250,35 +302,7 @@ func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.nodeRequest = services.NodeRequest{Action: m.nodeAction, UUID: m.nodeTarget.UUID}
 			m.problem = ""
 			m.scroll = 0
-			switch m.nodeAction {
-			case "nodes-list", "node-status":
-				m.nodeRequest.Action = "node-status"
-				return m.startNodeRequest(m.nodeRequest)
-			case "node-rename":
-				m.inputs = []textinput.Model{newInput(m.l("Новое имя", "New name"), m.nodeTarget.Name)}
-				m.inputs[0].CharLimit = 30
-				m.focus = 0
-				m.screen = "nodesInput"
-				return m, m.inputs[0].Focus()
-			case "node-toggle":
-				m.nodeRequest.Value = "disable"
-				if m.nodeTarget.IsDisabled {
-					m.nodeRequest.Value = "enable"
-				}
-				m.screen = "nodesConfirm"
-			case "node-restart":
-				m.screen = "nodesConfirm"
-			case "node-ssh":
-				m.nodeRequest.Action = "node-ssh-auth"
-				return m.startNodeRequest(m.nodeRequest)
-			case "node-site":
-				m.inputs = []textinput.Model{newInput("studio / atlas / journal", "studio")}
-				m.focus = 0
-				m.screen = "nodesInput"
-				return m, m.inputs[0].Focus()
-			case "node-core", "node-core-rollback", "node-update", "node-reinstall":
-				return m.startNodeRequest(services.NodeRequest{Action: m.nodeAction + "-prepare", UUID: m.nodeTarget.UUID})
-			}
+			return m.beginNodeAction(operation(m.nodeTitle, m.nodeTitle, m.nodeAction))
 		}
 	case "nodesInput":
 		if key == "tab" || key == "shift+tab" || key == "up" || key == "down" {
@@ -378,6 +402,16 @@ func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "nodesResult":
 		if key == "enter" {
+			if m.nodeBrowser {
+				if m.nodeAction == "node-delete" && m.problem == "" {
+					m.nodeTarget = services.Node{}
+					m.nodeAction = "nodes-list"
+					return m.startNodeRequest(services.NodeRequest{Action: "nodes-list"})
+				}
+				if m.nodeTarget.UUID != "" {
+					return m.startNodeRequest(services.NodeRequest{Action: "node-details", UUID: m.nodeTarget.UUID})
+				}
+			}
 			return m.startNodeRequest(services.NodeRequest{Action: "nodes-list"})
 		}
 	}
@@ -387,6 +421,16 @@ func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) nodesView() string {
 	title := accent.Render(m.nodeTitle)
 	switch m.screen {
+	case "nodesCard":
+		rows := append(m.nodeCardInfo(), "")
+		for i, action := range nodeCardActions() {
+			line := "  " + m.l(action.ru, action.en)
+			if i == m.nodeActionCursor {
+				line = accent.Render("› " + m.l(action.ru, action.en))
+			}
+			rows = append(rows, line)
+		}
+		return strings.Join(rows, "\n")
 	case "nodesCoreVersions":
 		rows := []string{title, "", m.panelResult, "", m.l("Выберите версию для отката:", "Select a version for rollback:")}
 		// Keep the selected release visible even in a small terminal.
@@ -427,6 +471,15 @@ func (m Model) nodesView() string {
 			}
 			rows = append(rows, line)
 		}
+		if m.nodeBrowser {
+			for i, text := range []string{m.l("Добавить ноду", "Add node"), m.l("Незавершённые установки", "Pending installations")} {
+				line := "  " + text
+				if m.nodeCursor == len(m.nodeList)+i {
+					line = accent.Render("› " + text)
+				}
+				rows = append(rows, line)
+			}
+		}
 		return strings.Join(rows, "\n")
 	case "nodesInput":
 		rows := []string{title, "", m.nodeTarget.Name + " · " + m.nodeTarget.Address, ""}
@@ -464,6 +517,8 @@ func (m Model) nodesView() string {
 	case "nodesConfirm":
 		text := title + "\n\n" + m.nodeTarget.Name + " · " + m.nodeTarget.Address + "\nUUID: " + m.nodeTarget.UUID + "\n\n"
 		switch m.nodeAction {
+		case "node-delete":
+			text += warning.Render(m.l("Удалить выбранную ноду из панели?\nКонтейнер на сервере продолжит работать. Профили, хосты и сквады сохраняются.", "Delete the selected node from the panel?\nThe remote container will remain running. Profiles, hosts and squads are retained."))
 		case "node-core", "node-core-rollback":
 			if m.nodeAction == "node-core-rollback" {
 				text += m.l("Откат Xray до ", "Roll back Xray to ") + m.nodeRequest.Value + "\n"
@@ -491,6 +546,9 @@ func (m Model) nodesView() string {
 		}
 		return text + "\n\n" + m.l("Enter — подтвердить · Esc — назад", "Enter — confirm · Esc — back")
 	case "nodesResult":
+		if m.nodeBrowser {
+			return title + "\n\n" + m.panelResult + "\n\n" + m.l("Enter — обновить данные · Esc — назад", "Enter — refresh details · Esc — back")
+		}
 		return title + "\n\n" + m.panelResult + "\n\n" + m.l("Enter — обновить список · Esc — назад", "Enter — refresh list · Esc — back")
 	}
 	return ""
