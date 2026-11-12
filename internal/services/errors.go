@@ -4,12 +4,22 @@ import (
 	"strings"
 )
 
-type localizedError struct{ ru, en string }
+type localizedError struct {
+	ru, en string
+	cause  error
+}
 
 func (e *localizedError) Error() string { return e.en }
+func (e *localizedError) Unwrap() error { return e.cause }
 
 // LocalizedError keeps the service language-neutral until the UI renders it.
 func LocalizedError(ru, en string) error { return &localizedError{ru: ru, en: en} }
+
+// WrapLocalized keeps the diagnostic cause for logs/errors.Is without forcing
+// untranslated low-level diagnostics into the selected UI language.
+func WrapLocalized(cause error, ru, en string) error {
+	return &localizedError{ru: ru, en: en, cause: cause}
+}
 
 func ErrorText(err error, language string) string {
 	if err == nil {

@@ -27,6 +27,7 @@ func TestCoreVersionPolicy(t *testing.T) {
 		{"update-cannot-downgrade", "26.11.9", "node-core-run", "v26.10.31", true, false},
 		{"rollback-cannot-upgrade", "26.9.9", "node-core-rollback-run", "v26.10.31", false, true},
 		{"rollback-cannot-reinstall", "26.10.31", "node-core-rollback-run", "v26.10.31", false, true},
+		{"incompatible-rollback", "26.10.31", "node-core-rollback-run", "v25.12.8", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _, j := updateFixture(t)
@@ -75,7 +76,7 @@ func TestCoreRollbackListsOnlyOlderStableReleases(t *testing.T) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`[
 		{"tag_name":"v26.9.9"},{"tag_name":"v26.11.9"},{"tag_name":"v26.10.31"},
 		{"tag_name":"v26.10.21"},{"tag_name":"v26.7.28","prerelease":true},
-		{"tag_name":"v26.7.11","draft":true},{"tag_name":"nightly"},{"tag_name":"v26.9.9"}]`)), Header: make(http.Header)}, nil
+		{"tag_name":"v26.7.11","draft":true},{"tag_name":"v25.12.8"},{"tag_name":"v26.5.9"},{"tag_name":"nightly"},{"tag_name":"v26.9.9"}]`)), Header: make(http.Header)}, nil
 	})
 	node := services.Node{UUID: j.NodeUUID, Address: j.Params.Address, IsConnected: true, XrayVersion: "26.10.31"}
 	result, err := r.manageNodeCore(context.Background(), services.NodeRequest{Action: "node-core-rollback-prepare"}, node)
@@ -127,6 +128,7 @@ func TestXrayUpdateRecoveryAndImagePreservation(t *testing.T) {
 				t.Fatal(err)
 			}
 			const target = "v26.9.9"
+			phase := "missing"
 			originalImage, originalKey := j.Image, j.RealityKey
 			r.Client.Transport = transportFunc(func(req *http.Request) (*http.Response, error) {
 				var data []byte
@@ -144,13 +146,16 @@ func TestXrayUpdateRecoveryAndImagePreservation(t *testing.T) {
 					}
 					data = []byte("<html>website</html>")
 				} else {
-					data, _ = json.Marshal(map[string]any{"response": map[string]any{"uuid": j.NodeUUID, "isConnected": true, "isDisabled": false, "versions": map[string]string{"xray": strings.TrimPrefix(target, "v"), "node": "2.7.0"}}})
+					version := strings.TrimPrefix(target, "v")
+					if phase == "rolled-back" {
+						version = "26.7.28"
+					}
+					data, _ = json.Marshal(map[string]any{"response": map[string]any{"uuid": j.NodeUUID, "isConnected": true, "isDisabled": false, "versions": map[string]string{"xray": version, "node": "2.7.0"}}})
 				}
 				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(data))), Header: headers}, nil
 			})
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			phase := "missing"
 			r.Runner = updateContextRunner{run: func(callCtx context.Context, input []byte) ([]byte, error) {
 				if callCtx.Err() != nil {
 					t.Fatal("cancelled context reused for recovery")
@@ -179,7 +184,7 @@ func TestXrayUpdateRecoveryAndImagePreservation(t *testing.T) {
 				case strings.Contains(script, "RM_CORE_ACTION='rollback'"):
 					phase = "rolled-back"
 				}
-				return []byte("RM_CORE_PHASE=" + phase + "\nRM_CORE_VERSION=" + target + "\nRM_CORE_PATH=/opt/remnanode/xray/" + target + "/amd64/xray\n"), nil
+				return []byte("RM_CORE_PHASE=" + phase + "\nRM_CORE_VERSION=" + target + "\nRM_CORE_PATH=/opt/remnanode/xray/" + target + "/amd64/xray\nRM_CORE_RUNNING_VERSION=v26.7.28\n"), nil
 			}}
 			err := r.updateNodeCore(ctx, &j, target)
 			if (scenario == "success" || scenario == "rollback-success") && err != nil {
@@ -223,5 +228,39 @@ func TestXrayMissingRemotePreparationClearsOnlyCoreTransaction(t *testing.T) {
 	}
 	if j.CoreUpdateID != "" || j.CoreTargetVersion != "" || j.Image == "" {
 		t.Fatal("missing preparation damaged node state")
+	}
+}
+
+func TestFailedRecoveryRetainsTransactionAndUsesRussian(t *testing.T) {
+	r, _, j := updateFixture(t)
+	j.CoreUpdateID, j.CoreTargetVersion = strings.Repeat("b", 32), "v26.9.9"
+	r.Runner = updateContextRunner{run: func(_ context.Context, input []byte) ([]byte, error) {
+		if strings.Contains(string(input), "RM_CORE_ACTION='verify-previous'") {
+			return nil, errors.New("previous process is down")
+		}
+		return []byte("RM_CORE_PHASE=rolled-back\nRM_CORE_VERSION=v26.9.9\nRM_CORE_PATH=/opt/remnanode/xray/v26.9.9/amd64/xray\n"), nil
+	}}
+	cause := services.LocalizedError("Панель не подтвердила запуск выбранной версии Xray.", "panel did not confirm the selected running Xray version")
+	err := r.failNodeCore(&j, cause)
+	text := services.ErrorText(err, "ru")
+	if j.CoreUpdateID == "" || !strings.Contains(text, "ещё не завершено") || strings.Contains(text, "previous process") || strings.Contains(text, "recovery pending") || !errors.Is(err, cause) {
+		t.Fatal("unverified recovery was reported as complete", text, j.CoreUpdateID)
+	}
+}
+
+func TestCoreTimeoutAndRecoverySummaryAreLocalized(t *testing.T) {
+	r, runner, j := updateFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cause := r.waitNodeCore(ctx, j)
+	j.CoreUpdateID, j.CoreTargetVersion = strings.Repeat("b", 32), "v26.9.9"
+	runner.response = func(_ string, _ []byte) ([]byte, error) { return []byte("RM_CORE_PHASE=missing\n"), nil }
+	err := r.failNodeCore(&j, cause)
+	ru, en := services.ErrorText(err, "ru"), services.ErrorText(err, "en")
+	if !strings.Contains(ru, "Панель не подтвердила") || !strings.Contains(ru, "восстановление") || strings.Contains(ru, "transaction recovered") || strings.Contains(ru, "panel did not") {
+		t.Fatal(ru)
+	}
+	if !strings.Contains(en, "panel did not confirm") || !strings.Contains(en, "transaction recovered") {
+		t.Fatal(en)
 	}
 }

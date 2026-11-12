@@ -28,7 +28,39 @@ verify_core() {
     # Verify the running process, rather than just the executable on disk.
     docker exec "$container" sh -c 'for exe in /proc/[0-9]*/exe; do target=$(readlink "$exe" 2>/dev/null || true); case "$target" in */xray|*/rw-core) sha256sum "$exe";; esac; done' | grep "^$expected " >/dev/null
 }
+verify_previous() {
+    local container expected actual version previous
+    cmp -s "$stack/compose.json" "$dir/compose.before.json" || return 1
+    container=$(compose ps -q remnanode) || return 1
+    [[ -n $container && $(docker inspect --format '{{.State.Running}}' "$container") == true ]] || return 1
+    [[ $(docker inspect --format '{{.Image}}' "$container") == "$(docker image inspect --format '{{.Id}}' "$RM_NODE_IMAGE")" ]] || return 1
+    actual=$(docker exec "$container" sha256sum /usr/local/bin/xray) || return 1
+    actual=${actual%% *}
+    expected=$actual
+    if [[ -f $dir/previous.sha256 ]]; then expected=$(cat "$dir/previous.sha256"); fi
+    [[ $expected =~ ^[a-f0-9]{64}$ && $actual == "$expected" ]] || return 1
+    version=$(docker exec "$container" /usr/local/bin/xray version | awk 'NR==1 {print $2}') || return 1
+    [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    if [[ -f $dir/previous.version ]]; then
+        previous=$(cat "$dir/previous.version")
+        [[ $version == "$previous" ]] || return 1
+    fi
+    docker exec "$container" sh -c 'for exe in /proc/[0-9]*/exe; do target=$(readlink "$exe" 2>/dev/null || true); case "$target" in */xray|*/rw-core) sha256sum "$exe";; esac; done' | grep "^$expected " >/dev/null || return 1
+    printf 'RM_CORE_RUNNING_VERSION=v%s\n' "$version" >&3
+}
 case ${RM_CORE_ACTION:-} in
+verify-previous)
+    [[ $(cat "$dir/phase") == rolled-back ]]
+    verified=false
+    for attempt in {1..15}; do
+        if verify_previous; then verified=true; break; fi
+        sleep 2
+    done
+    [[ $verified == true ]]
+    systemctl stop "$unit-trial.timer" || true
+    systemctl disable "$unit.service" || true
+    report
+    ;;
 status)
     if [[ -f $dir/phase ]]; then report; else echo RM_CORE_PHASE=missing >&3; fi
     ;;
@@ -55,6 +87,10 @@ prepare)
     [[ $digest =~ ^[a-f0-9]{64}$ && $url == "https://github.com/XTLS/Xray-core/releases/download/$RM_CORE_VERSION/"* ]]
     mkdir -p "$root/core-updates"; mkdir -m 0700 "$dir"
     write "$dir/compose.before.json" <"$stack/compose.json"
+    previous=$(docker exec "$container" sha256sum /usr/local/bin/xray); previous=${previous%% *}
+    [[ $previous =~ ^[a-f0-9]{64}$ ]]
+    printf '%s\n' "$previous" | write "$dir/previous.sha256"
+    docker exec "$container" /usr/local/bin/xray version | awk 'NR==1 {print $2}' | write "$dir/previous.version"
     printf '%s\n' "$RM_CORE_VERSION" | write "$dir/version"
     binary=$stack/xray/$RM_CORE_VERSION/$arch/xray
     mkdir -p "$(dirname "$binary")"
@@ -73,6 +109,34 @@ prepare)
     docker cp "$binary" "$container:/tmp/remnamanager-xray-$RM_CORE_ID"
     version=$(docker exec "$container" "/tmp/remnamanager-xray-$RM_CORE_ID" version | awk 'NR==1 {print $2}')
     [[ $version == "${RM_CORE_VERSION#v}" ]]
+    # Validate with the exact configuration argument of the running core.
+    # Keep socket tokens and parser output out of both the UI and logs.
+    if ! docker exec -i "$container" sh -s -- "/tmp/remnamanager-xray-$RM_CORE_ID" <<'EOF'
+set -eu
+config=
+for exe in /proc/[0-9]*/exe; do
+    target=$(readlink "$exe" 2>/dev/null || true)
+    case "$target" in
+        */xray|*/rw-core)
+            config=$(tr '\000' '\n' <"${exe%/exe}/cmdline" | awk '
+                nextarg { print; exit }
+                $0 == "-config" || $0 == "--config" || $0 == "-c" { nextarg=1; next }
+                /^--?config=/ { sub(/^--?config=/, ""); print; exit }
+                /^-c=/ { sub(/^-c=/, ""); print; exit }
+            ')
+            [ -n "$config" ] || continue
+            break
+            ;;
+    esac
+done
+[ -n "$config" ]
+"$1" run -test -format json -config "$config" >/dev/null 2>&1
+EOF
+    then
+        docker exec "$container" rm -f "/tmp/remnamanager-xray-$RM_CORE_ID" || true
+        echo RM_CORE_FAILURE=config-incompatible >&3
+        exit 1
+    fi
     docker exec "$container" rm -f "/tmp/remnamanager-xray-$RM_CORE_ID"
     jq --arg source "$binary" '.services.remnanode.volumes=((.services.remnanode.volumes // [] | map(select(if type=="object" then .target!="/usr/local/bin/xray" else true end))) + [{type:"bind",source:$source,target:"/usr/local/bin/xray",read_only:true}])' "$dir/compose.before.json" | write "$dir/compose.after.json"
     docker compose --project-directory "$stack" -f "$dir/compose.after.json" config --quiet

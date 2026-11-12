@@ -31,7 +31,11 @@ func (r *Real) ManageNodes(ctx context.Context, request services.NodeRequest) (s
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.manageNodes(ctx, request)
+	result, err := r.manageNodes(ctx, request)
+	if err != nil && strings.HasPrefix(request.Action, "node-core-") && services.ErrorText(err, "ru") == err.Error() {
+		err = services.WrapLocalized(err, "Не удалось выполнить операцию с ядром Xray. Проверьте подключение ноды и журнал менеджера: "+r.LogPath, err.Error())
+	}
+	return result, err
 }
 
 func (r *Real) nodeAPI(ctx context.Context, method, path string, body any) (json.RawMessage, error) {

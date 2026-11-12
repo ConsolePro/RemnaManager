@@ -5,7 +5,6 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -20,11 +19,49 @@ var nodeCoreAgent []byte
 var coreVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 var corePathPattern = regexp.MustCompile(`^/opt/remnanode/xray/v[0-9]+\.[0-9]+\.[0-9]+/(amd64|arm64)/xray$`)
 
+// Current Remnawave Node passes configuration as @abstract:/internal/get-config.
+// This loader syntax first appeared in Xray v26.6.1. Stable releases are still
+// validated against the actual node configuration before they are installed.
+const minimumNodeCoreVersion = "v26.6.1"
+
+func coreError(message string) error {
+	ru := map[string]string{
+		"finish node recovery before updating Xray":                             "Сначала завершите восстановление ноды, затем повторите операцию с Xray.",
+		"enable the node and restore its panel connection before updating Xray": "Включите ноду и восстановите её подключение к панели перед изменением Xray.",
+		"node must be enabled and connected":                                    "Нода должна быть включена и подключена к панели.",
+		"select an official Xray release version":                               "Выберите версию Xray из официального списка релизов.",
+		"unknown Xray operation":                                                "Неизвестная операция с ядром Xray.",
+		"invalid Xray transaction":                                              "Некорректное состояние операции с Xray. Повторно откройте раздел ядра.",
+		"invalid Xray action":                                                   "Некорректное действие с ядром Xray.",
+		"invalid Xray transaction response":                                     "Нода вернула некорректный ответ об операции с Xray. Проверьте журнал ноды.",
+		"unknown Xray recovery state":                                           "Не удалось определить состояние восстановления Xray. Проверьте журнал ноды.",
+		"Xray preparation was not confirmed":                                    "Нода не подтвердила подготовку нового ядра Xray. Замена отменена.",
+		"Xray trial did not start":                                              "Пробный запуск выбранного ядра Xray не начался.",
+		"Xray commit not confirmed":                                             "Нода не подтвердила сохранение выбранного ядра Xray. Выполняется проверка восстановления.",
+	}[message]
+	if ru == "" {
+		ru = "Не удалось выполнить операцию с ядром Xray."
+	}
+	return services.LocalizedError(ru, message)
+}
+
+func coreCatalogError(err error) error {
+	return services.WrapLocalized(err, "Не удалось получить или проверить официальный релиз Xray. Проверьте доступ к GitHub и повторите операцию.", "Could not read or verify the official Xray release: "+err.Error())
+}
+
+func compatibleNodeCoreVersion(version string) bool {
+	return updater.TagPattern.MatchString(version) && !updater.Newer(minimumNodeCoreVersion, version)
+}
+
+func incompatibleNodeCoreError(version string) error {
+	return services.LocalizedError("Xray "+version+" несовместим со способом загрузки конфигурации Remna Node. Требуется Xray "+minimumNodeCoreVersion+" или новее. Ядро не изменено.", "Xray "+version+" does not support the Remna Node configuration loader. Xray "+minimumNodeCoreVersion+" or newer is required. The core was not changed.")
+}
+
 type coreAsset struct {
 	URL    string `json:"url"`
 	SHA256 string `json:"sha256"`
 }
-type coreState struct{ Phase, Version, Path string }
+type coreState struct{ Phase, Version, Path, RunningVersion string }
 
 func (r *Real) manageNodeCore(ctx context.Context, request services.NodeRequest, node services.Node) (services.NodeResult, error) {
 	j, err := r.installedNodeJob(node.UUID)
@@ -32,7 +69,7 @@ func (r *Real) manageNodeCore(ctx context.Context, request services.NodeRequest,
 		return services.NodeResult{}, err
 	}
 	if j.Version < 2 || j.UpdateID != "" || j.FirewallPending || node.Address != j.Params.Address {
-		return services.NodeResult{}, errors.New("finish node recovery before updating Xray")
+		return services.NodeResult{}, coreError("finish node recovery before updating Xray")
 	}
 	result := services.NodeResult{}
 	rollback := strings.HasPrefix(request.Action, "node-core-rollback-")
@@ -50,7 +87,7 @@ func (r *Real) manageNodeCore(ctx context.Context, request services.NodeRequest,
 			return result, nil
 		}
 		if node.IsDisabled || !node.IsConnected {
-			return result, errors.New("enable the node and restore its panel connection before updating Xray")
+			return result, coreError("enable the node and restore its panel connection before updating Xray")
 		}
 		current, err := currentCoreVersion(node)
 		if err != nil {
@@ -60,10 +97,10 @@ func (r *Real) manageNodeCore(ctx context.Context, request services.NodeRequest,
 		if rollback {
 			releases, err := catalog.List(ctx)
 			if err != nil {
-				return result, err
+				return result, coreCatalogError(err)
 			}
 			for _, release := range releases {
-				if updater.Newer(current, release.Version) {
+				if compatibleNodeCoreVersion(release.Version) && updater.Newer(current, release.Version) {
 					result.Versions = append(result.Versions, release.Version)
 				}
 			}
@@ -72,31 +109,38 @@ func (r *Real) manageNodeCore(ctx context.Context, request services.NodeRequest,
 			if len(result.Versions) == 0 {
 				result.NoChange = true
 				result.Text += "\nNo older stable versions found in the recent official releases."
-				result.TextRU += "\nВ последних официальных релизах нет более ранних стабильных версий."
+				result.TextRU += "\nВ последних официальных релизах нет более ранних совместимых стабильных версий."
 			}
 			return result, nil
 		}
 		release, err := (updater.Catalog{Client: r.Client, Repo: "XTLS/Xray-core"}).Get(ctx, "latest")
 		if err != nil {
-			return result, err
+			return result, coreCatalogError(err)
 		}
 		if !updater.Newer(release.Version, current) {
 			result = coreUpToDate(current, release.Version)
 			if unified {
 				releases, err := catalog.List(ctx)
 				if err != nil {
-					return services.NodeResult{}, err
+					return services.NodeResult{}, coreCatalogError(err)
 				}
 				for _, previous := range releases {
-					if updater.Newer(current, previous.Version) {
+					if compatibleNodeCoreVersion(previous.Version) && updater.Newer(current, previous.Version) {
 						result.Versions = append(result.Versions, previous.Version)
 					}
 				}
 				result.NoChange = len(result.Versions) == 0
+				if result.NoChange {
+					result.TextRU += "\nБолее ранних совместимых стабильных версий для отката не найдено."
+					result.Text += "\nNo older compatible stable releases are available for rollback."
+				}
 			}
 			return result, nil
 		}
 		result.Version = release.Version
+		if !compatibleNodeCoreVersion(release.Version) {
+			return result, incompatibleNodeCoreError(release.Version)
+		}
 		result.Text = "Xray " + current + " → " + release.Version
 		result.TextRU = "Доступна новая версия Xray: " + release.Version + "\nТекущая версия: " + current
 		return result, nil
@@ -105,14 +149,17 @@ func (r *Real) manageNodeCore(ctx context.Context, request services.NodeRequest,
 	case "node-core-run":
 		if j.CoreUpdateID == "" {
 			if node.IsDisabled || !node.IsConnected {
-				return result, errors.New("node must be enabled and connected")
+				return result, coreError("node must be enabled and connected")
 			}
 			current, err := currentCoreVersion(node)
 			if err != nil {
 				return result, err
 			}
 			if !updater.TagPattern.MatchString(request.Value) {
-				return result, errors.New("select an official Xray release version")
+				return result, coreError("select an official Xray release version")
+			}
+			if !compatibleNodeCoreVersion(request.Value) {
+				return result, incompatibleNodeCoreError(request.Value)
 			}
 			if rollback {
 				if !updater.Newer(current, request.Value) {
@@ -131,7 +178,7 @@ func (r *Real) manageNodeCore(ctx context.Context, request services.NodeRequest,
 			err = r.recoverNodeCore(ctx, &j)
 		} else {
 			if node.IsDisabled || !node.IsConnected {
-				return result, errors.New("node must be enabled and connected")
+				return result, coreError("node must be enabled and connected")
 			}
 			if err := r.ensureNodeLayout(ctx, &j); err != nil {
 				return result, err
@@ -142,7 +189,7 @@ func (r *Real) manageNodeCore(ctx context.Context, request services.NodeRequest,
 		result.TextRU = "Операция с Xray завершена. Версия: " + j.CoreVersion
 		return result, err
 	}
-	return result, errors.New("unknown Xray operation")
+	return result, coreError("unknown Xray operation")
 }
 
 func currentCoreVersion(node services.Node) (string, error) {
@@ -160,12 +207,12 @@ func coreUpToDate(current, latest string) services.NodeResult {
 }
 func (r *Real) runNodeCoreAgent(ctx context.Context, j NodeJob, action string, assets map[string]coreAsset) (coreState, error) {
 	if !regexp.MustCompile(`^[a-f0-9]{32}$`).MatchString(j.CoreUpdateID) || !updater.TagPattern.MatchString(j.CoreTargetVersion) {
-		return coreState{}, errors.New("invalid Xray transaction")
+		return coreState{}, coreError("invalid Xray transaction")
 	}
 	switch action {
-	case "prepare", "apply", "commit", "rollback", "status":
+	case "prepare", "apply", "commit", "rollback", "status", "verify-previous":
 	default:
-		return coreState{}, errors.New("invalid Xray action")
+		return coreState{}, coreError("invalid Xray action")
 	}
 	data, err := json.Marshal(assets)
 	if err != nil {
@@ -179,7 +226,10 @@ func (r *Real) runNodeCoreAgent(ctx context.Context, j NodeJob, action string, a
 	input := fmt.Sprintf("set +x\nRM_JOB_ID='%s'\nRM_CORE_ID='%s'\nRM_CORE_ACTION='%s'\nRM_CORE_VERSION='%s'\nRM_NODE_IMAGE='%s'\nRM_CORE_ASSETS_B64='%s'\n", j.ID, j.CoreUpdateID, action, j.CoreTargetVersion, j.Image, base64.StdEncoding.EncodeToString(data))
 	output, err := r.Runner.Run(ctx, append([]byte(input), nodeCoreAgent...), "ssh", args...)
 	if err != nil {
-		return coreState{}, fmt.Errorf("Xray %s failed; remote log: %s: %w", action, nodeRemoteLog(j), err)
+		if strings.Contains(string(output), "RM_CORE_FAILURE=config-incompatible") {
+			return coreState{}, services.WrapLocalized(err, "Выбранное ядро Xray не смогло проверить текущую конфигурацию Remna Node. Замена ядра отменена; работающее ядро не изменено.", "The selected Xray core cannot validate the current Remna Node configuration. Replacement was cancelled; the running core was not changed.")
+		}
+		return coreState{}, services.WrapLocalized(err, "Не удалось выполнить операцию с ядром Xray. Журнал на ноде: "+nodeRemoteLog(j), fmt.Sprintf("Xray %s failed; remote log: %s: %v", action, nodeRemoteLog(j), err))
 	}
 	state := coreState{}
 	for _, line := range strings.Split(string(output), "\n") {
@@ -192,12 +242,15 @@ func (r *Real) runNodeCoreAgent(ctx context.Context, j NodeJob, action string, a
 		if strings.HasPrefix(line, "RM_CORE_PATH=") {
 			state.Path = strings.TrimSpace(strings.TrimPrefix(line, "RM_CORE_PATH="))
 		}
+		if strings.HasPrefix(line, "RM_CORE_RUNNING_VERSION=") {
+			state.RunningVersion = strings.TrimSpace(strings.TrimPrefix(line, "RM_CORE_RUNNING_VERSION="))
+		}
 	}
 	if state.Phase == "missing" && action == "status" {
 		return state, nil
 	}
 	if state.Version != j.CoreTargetVersion || !corePathPattern.MatchString(state.Path) || !strings.HasPrefix(state.Path, "/opt/remnanode/xray/"+state.Version+"/") {
-		return state, errors.New("invalid Xray transaction response")
+		return state, coreError("invalid Xray transaction response")
 	}
 	return state, nil
 }
@@ -216,12 +269,21 @@ func (r *Real) recoverNodeCore(ctx context.Context, j *NodeJob) error {
 	case "committed":
 		j.CoreVersion, j.CoreBinary = state.Version, state.Path
 	case "rolled-back":
-		if err := r.waitInstalledNode(ctx, *j); err != nil {
+		verified, err := r.runNodeCoreAgent(ctx, *j, "verify-previous", nil)
+		if err != nil {
+			return err
+		}
+		if !updater.TagPattern.MatchString(verified.RunningVersion) {
+			return services.LocalizedError("Нода не подтвердила запуск прежнего ядра Xray. Восстановление ещё не завершено.", "The node did not confirm that the previous Xray core is running. Recovery is incomplete.")
+		}
+		previous := *j
+		previous.CoreTargetVersion = verified.RunningVersion
+		if err := r.waitNodeCore(ctx, previous); err != nil {
 			return err
 		}
 	case "missing": // Remote apply always records trial before editing Compose.
 	default:
-		return errors.New("unknown Xray recovery state")
+		return coreError("unknown Xray recovery state")
 	}
 	j.CoreUpdateID, j.CoreTargetVersion = "", ""
 	return r.saveNodeJob(j)
@@ -229,26 +291,33 @@ func (r *Real) recoverNodeCore(ctx context.Context, j *NodeJob) error {
 func (r *Real) failNodeCore(j *NodeJob, cause error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
+	target := j.CoreTargetVersion
 	if err := r.recoverNodeCore(ctx, j); err != nil {
-		return fmt.Errorf("%w; Xray recovery pending: %v", cause, err)
+		return services.WrapLocalized(cause, services.ErrorText(cause, "ru")+"\nВосстановление прежнего ядра ещё не завершено: "+services.ErrorText(err, "ru")+"\nПовторно откройте «Ядро Xray» для восстановления.", fmt.Sprintf("%v; Xray recovery pending: %v", cause, err))
 	}
-	return fmt.Errorf("%w; Xray transaction recovered", cause)
+	if j.CoreVersion == target {
+		return services.WrapLocalized(cause, services.ErrorText(cause, "ru")+"\nВыбранная версия Xray установлена; состояние операции восстановлено.", fmt.Sprintf("%v; Xray transaction recovered", cause))
+	}
+	return services.WrapLocalized(cause, services.ErrorText(cause, "ru")+"\nОперация отменена; восстановление прежних настроек завершено.", fmt.Sprintf("%v; Xray transaction recovered", cause))
 }
 func (r *Real) updateNodeCore(ctx context.Context, j *NodeJob, version string) error {
+	if !compatibleNodeCoreVersion(version) {
+		return incompatibleNodeCoreError(version)
+	}
 	catalog := updater.Catalog{Client: r.Client, Repo: "XTLS/Xray-core"}
 	release, err := catalog.Get(ctx, version)
 	if err != nil {
-		return err
+		return coreCatalogError(err)
 	}
 	assets := map[string]coreAsset{}
 	for arch, name := range map[string]string{"amd64": "Xray-linux-64.zip", "arm64": "Xray-linux-arm64-v8a.zip"} {
 		asset, err := catalog.Asset(release, name)
 		if err != nil {
-			return err
+			return coreCatalogError(err)
 		}
 		digest, err := catalog.Digest(ctx, release, asset)
 		if err != nil {
-			return err
+			return coreCatalogError(err)
 		}
 		assets[arch] = coreAsset{URL: asset.URL, SHA256: digest}
 	}
@@ -265,12 +334,12 @@ func (r *Real) updateNodeCore(ctx context.Context, j *NodeJob, version string) e
 		return r.failNodeCore(j, err)
 	}
 	if state.Phase != "prepared" {
-		return r.failNodeCore(j, errors.New("Xray preparation was not confirmed"))
+		return r.failNodeCore(j, coreError("Xray preparation was not confirmed"))
 	}
 	state, err = r.runNodeCoreAgent(ctx, *j, "apply", nil)
 	if err != nil || state.Phase != "trial" {
 		if err == nil {
-			err = errors.New("Xray trial did not start")
+			err = coreError("Xray trial did not start")
 		}
 		return r.failNodeCore(j, err)
 	}
@@ -283,7 +352,7 @@ func (r *Real) updateNodeCore(ctx context.Context, j *NodeJob, version string) e
 	state, err = r.runNodeCoreAgent(ctx, *j, "commit", nil)
 	if err != nil || state.Phase != "committed" {
 		if err == nil {
-			err = errors.New("Xray commit not confirmed")
+			err = coreError("Xray commit not confirmed")
 		}
 		return r.failNodeCore(j, err)
 	}
@@ -304,7 +373,7 @@ func (r *Real) waitNodeCore(ctx context.Context, j NodeJob) error {
 		}
 		select {
 		case <-wait.Done():
-			return errors.New("panel did not confirm the selected running Xray version")
+			return services.LocalizedError("Панель не подтвердила запуск выбранной версии Xray.", "panel did not confirm the selected running Xray version")
 		case <-time.After(2 * time.Second):
 		}
 	}

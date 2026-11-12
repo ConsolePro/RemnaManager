@@ -48,7 +48,7 @@ def case(scenario):
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         if scenario == "bad-checksum":
             digest = "b" * 64
-        for name in ("flock", "systemctl", "systemd-run", "uname", "id", "curl", "jq"):
+        for name in ("flock", "systemctl", "systemd-run", "uname", "id", "curl", "jq", "sleep"):
             body = "#!/bin/sh\n"
             if name == "uname":
                 body += "echo x86_64\n"
@@ -70,18 +70,31 @@ import hashlib, json, os, sys
 from pathlib import Path
 args=sys.argv[1:]
 stack=Path(os.environ['RM_FIXTURE_STACK'])
+if args[:2]==['exec','-i']: args.pop(1)
+node=json.loads((stack/'compose.json').read_text())['services']['remnanode']
+source=next((volume['source'] for volume in node.get('volumes',[]) if volume['target']=='/usr/local/bin/xray'),None)
+current=Path(source).read_bytes() if source else b'bundled-core'
+current_version='26.9.9' if source and '/v26.9.9/' in source else ('26.10.31' if source else '26.7.28')
 if args[0]=='compose':
     if 'ps' in args: print('fixture-container')
 elif args[0]=='image': print('sha256:fixture-image')
 elif args[0]=='inspect': print('sha256:fixture-image' if '{{.Image}}' in args else 'true')
 elif args[0]=='exec':
     if args[2]=='sh':
-        if '/proc/' in args[-1]:
-            source=json.loads((stack/'compose.json').read_text())['services']['remnanode']['volumes'][0]['source']
-            print(hashlib.sha256(Path(source).read_bytes()).hexdigest()+' /proc/123/exe')
+        if '-s' in args:
+            (stack/'preflight-called').write_text('yes')
+            if os.environ['RM_FIXTURE_SCENARIO']=='config-incompatible': sys.exit(23)
+        elif '/proc/' in args[-1]:
+            phases=list((stack/'state/core-updates').glob('*/phase'))
+            restored=any(p.read_text().strip()=='rolled-back' for p in phases)
+            if not (os.environ['RM_FIXTURE_SCENARIO']=='restored-process-down' and restored):
+                print(hashlib.sha256(current).hexdigest()+' /proc/123/exe')
         else: print('/usr/local/bin/xray')
+    elif args[2]=='sha256sum': print(hashlib.sha256(current).hexdigest()+' /usr/local/bin/xray')
     elif args[-1]=='version':
-        print('Xray '+ ('0.0.0' if os.environ['RM_FIXTURE_SCENARIO']=='bad-version' else '26.9.9')+' fixture')
+        candidate=Path(args[2]).name.startswith('remnamanager-xray-')
+        version=('0.0.0' if os.environ['RM_FIXTURE_SCENARIO']=='bad-version' else '26.9.9') if candidate else current_version
+        print('Xray '+version+' fixture')
 ''')
         docker.chmod(0o755)
         script = (repo / "internal/installer/node_core_agent.sh").read_text()
@@ -102,11 +115,15 @@ elif args[0]=='exec':
             return result, log
 
         result, log = run("prepare")
-        if scenario in ("bad-checksum", "bad-version"):
+        if scenario in ("bad-checksum", "bad-version", "config-incompatible"):
             assert result.returncode != 0, log
             assert (stack / "compose.json").read_text() == before
+            if scenario == "config-incompatible":
+                assert "RM_CORE_FAILURE=config-incompatible" in result.stdout
+                assert (stack / "preflight-called").exists()
             return
         assert result.returncode == 0 and "RM_CORE_PHASE=prepared" in result.stdout, log
+        assert (stack / "preflight-called").exists()
         assert (stack / "compose.json").read_text() == before
         result, log = run("apply")
         assert result.returncode == 0, log
@@ -115,15 +132,20 @@ elif args[0]=='exec':
         assert node["image"] == image and node["environment"]["SECRET_KEY"] == "preserve-me"
         assert node["volumes"][0]["target"] == "/usr/local/bin/xray"
         assert len(node["volumes"]) == 1 and version in node["volumes"][0]["source"]
-        action = "rollback" if scenario in ("rollback", "downgrade-failure") else "commit"
+        action = "rollback" if scenario in ("rollback", "downgrade-failure", "restored-process-down") else "commit"
         result, log = run(action)
         assert result.returncode == 0, log
         if action == "rollback":
             assert (stack / "compose.json").read_text() == before
+            result, log = run("verify-previous")
+            if scenario == "restored-process-down":
+                assert result.returncode != 0 and "RM_CORE_RUNNING_VERSION=" not in result.stdout, log
+                return
+            assert result.returncode == 0 and "RM_CORE_RUNNING_VERSION=v" in result.stdout, log
         else:
             assert "RM_CORE_PHASE=committed" in result.stdout
 
 
-for scenario in ("commit", "rollback", "downgrade", "downgrade-failure", "bad-checksum", "bad-version"):
+for scenario in ("commit", "rollback", "downgrade", "downgrade-failure", "bad-checksum", "bad-version", "config-incompatible", "restored-process-down"):
     case(scenario)
 print("PASS: Xray update and downgrade, failure restores previous core, checksum and version rejection")
