@@ -2,6 +2,7 @@ package stats
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -17,6 +18,9 @@ func TestRealSnapshot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	s := Collect(ctx)
+	if s.OS == "" || s.Arch != runtime.GOARCH {
+		t.Fatal("missing operating system or architecture", s)
+	}
 	if s.CPUs < 1 || s.CPU < 0 || s.CPU > 100 || s.Available > s.Memory || s.Free > s.Disk || s.DiskPercent < 0 || s.DiskPercent > 100 {
 		t.Fatal(s)
 	}

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 
@@ -31,7 +32,7 @@ func (m Model) serverHeader(now time.Time) string {
 	date := now.Format("02.01.2006 15:04:05 MST")
 	right := []string{muted.Render(date), muted.Render(m.l("Аптайм: ", "Uptime: ") + uptime), muted.Render(version)}
 	if compact {
-		lines := []string{headerLine(title, muted.Render(updater.Version), width), ansi.Truncate(muted.Render(tagline), width, "…"), ansi.Truncate(muted.Render(now.Format("02.01 15:04:05"))+" · "+muted.Render(m.l("Аптайм ", "Uptime ")+uptime), width, "…")}
+		lines := []string{headerLine(title, muted.Render(updater.Version), width), muted.Render(m.serverPlatform(width)), ansi.Truncate(muted.Render(now.Format("02.01 15:04:05"))+" · "+muted.Render(m.l("Аптайм ", "Uptime ")+uptime), width, "…")}
 		if status != "" {
 			lines = append(lines, ansi.Truncate(status, width, "…"))
 		}
@@ -40,7 +41,10 @@ func (m Model) serverHeader(now time.Time) string {
 	rightWidth := min(42, max(lipgloss.Width(right[0]), lipgloss.Width(right[1]), lipgloss.Width(right[2])))
 	leftWidth := max(1, width-rightWidth-2)
 	lines := strings.Split(title, "\n")
-	lines = append(lines, muted.Render(ansi.Truncate(tagline, leftWidth, "…")), status)
+	lines = append(lines, muted.Render(ansi.Truncate(tagline, leftWidth, "…")), muted.Render(m.serverPlatform(leftWidth)))
+	if status != "" {
+		lines = append(lines, status)
+	}
 	count := max(len(lines), len(right))
 	result := make([]string, count)
 	for i := 0; i < count; i++ {
@@ -54,6 +58,21 @@ func (m Model) serverHeader(now time.Time) string {
 		result[i] = headerLine(left, r, width)
 	}
 	return strings.Join(result, "\n")
+}
+
+func (m Model) serverPlatform(width int) string {
+	name, version, arch := m.stats.OS, m.stats.OSVersion, m.stats.Arch
+	if name == "" {
+		name = runtime.GOOS
+	}
+	if arch == "" {
+		arch = runtime.GOARCH
+	}
+	label := m.l("ОС: ", "OS: ") + name
+	if version != "" {
+		label += " " + version
+	}
+	return ansi.Truncate(label, max(0, width-lipgloss.Width(arch)-3), "…") + " · " + arch
 }
 
 func headerLine(left, right string, width int) string {

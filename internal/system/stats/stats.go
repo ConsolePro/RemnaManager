@@ -17,6 +17,7 @@ type Snapshot struct {
 	CPUs                                int
 	CPU                                 float64
 	CPUModel                            string
+	OS, OSVersion, Arch                 string
 	Uptime                              uint64
 	DiskUsed                            uint64
 	Memory, Available, Swap, Disk, Free uint64
@@ -26,7 +27,13 @@ type Snapshot struct {
 }
 
 func Collect(ctx context.Context) Snapshot {
-	s := Snapshot{CPUs: runtime.NumCPU(), IPv4: "Not connected", IPv6: "Not connected"}
+	s := Snapshot{CPUs: runtime.NumCPU(), IPv4: "Not connected", IPv6: "Not connected", OS: runtime.GOOS, Arch: runtime.GOARCH}
+	platform, _, version, platformErr := host.PlatformInformationWithContext(ctx)
+	if platform != "" {
+		s.OS = platformName(platform)
+	}
+	s.OSVersion = strings.TrimSpace(version)
+	s.Err = errors.Join(s.Err, platformErr)
 	usage, e := cpu.PercentWithContext(ctx, 150*time.Millisecond, false)
 	s.Err = errors.Join(s.Err, e)
 	if len(usage) > 0 {
@@ -62,6 +69,23 @@ func Collect(ctx context.Context) Snapshot {
 	s.IPv4, s.IPv6, e = network.Addresses()
 	s.Err = errors.Join(s.Err, e)
 	return s
+}
+
+func platformName(platform string) string {
+	switch strings.ToLower(platform) {
+	case "ubuntu":
+		return "Ubuntu"
+	case "debian":
+		return "Debian"
+	case "linux":
+		return "Linux"
+	case "windows":
+		return "Windows"
+	case "darwin":
+		return "macOS"
+	default:
+		return strings.TrimSpace(platform)
+	}
 }
 
 func Cores(n int) string {

@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="264" viewBox="0 0 1100 264" role="img" aria-labelledby="title description">
+  <title id="title">RemnaManager</title>
+  <desc id="description">Управление Remnawave из терминала. Изумрудный знак R с соединёнными узлами.</desc>
+  <defs>
+    <linearGradient id="surface" x2="1" y2="1"><stop stop-color="#0d181f"/><stop offset="1" stop-color="#080e14"/></linearGradient>
+    <linearGradient id="emerald" x2="1" y2="1"><stop stop-color="#71ffca"/><stop offset="1" stop-color="#00c875"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#00c875" stop-opacity=".14"/><stop offset="1" stop-color="#00c875" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="1100" height="264" rx="24" fill="url(#surface)"/>
+  <rect x=".5" y=".5" width="1099" height="263" rx="24" fill="none" stroke="#24343e"/>
+  <ellipse cx="110" cy="132" rx="250" ry="200" fill="url(#glow)"/>
+  <g fill="none" stroke="#173a32">
+    <path d="M820 0V70Q820 102 852 102H1100"/><path d="M868 0V40Q868 68 896 68H1100"/>
+    <path d="M790 264V216Q790 188 818 188H1100"/><path d="M906 264V236Q906 220 922 220H1100"/>
+  </g>
+  <g fill="#38dba0"><circle cx="820" cy="52" r="3"/><circle cx="988" cy="68" r="3"/><circle cx="860" cy="188" r="3"/><circle cx="1014" cy="220" r="3"/></g>
+  <rect x="38" y="38" width="188" height="188" rx="40" fill="#0c1c21" stroke="#234037"/>
+  <g transform="translate(62 52) scale(.64)">
+    <path d="M20 20H166L207 61V106L170 145H127L157 117H158L179 95V73L153 48H48V78H81V106H20Z" fill="#00cf80"/>
+    <circle cx="91" cy="92" r="19" fill="#00cf80"/>
+    <path d="M20 125H119Q143 125 159 144L207 200H169L126 153H48V173H80V201H20Z" fill="url(#emerald)"/>
+    <circle cx="91" cy="187" r="19" fill="#76ffca"/>
+  </g>
+  <text x="264" y="111" fill="#edf5f2" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="52" font-weight="700" letter-spacing="-1.8">Remna<tspan fill="#4ee5ad">Manager</tspan></text>
+  <text x="267" y="151" fill="#a4b9bc" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="20">Управление Remnawave из терминала</text>
+  <g font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="600" letter-spacing="1.8" fill="#88bea9">
+    <rect x="266" y="178" width="76" height="27" rx="13.5" fill="#112920" stroke="#224b39"/><text x="282" y="196">LINUX</text>
+    <rect x="351" y="178" width="64" height="27" rx="13.5" fill="#112920" stroke="#224b39"/><text x="369" y="196">SSH</text>
+    <rect x="424" y="178" width="62" height="27" rx="13.5" fill="#112920" stroke="#224b39"/><text x="443" y="196">TUI</text>
+  </g>
+  <rect x="864" y="91" width="156" height="82" rx="15" fill="#0b161b" stroke="#29463e"/>
+  <text x="891" y="144" fill="#68efb5" font-family="Consolas,monospace" font-size="34">$ re<tspan fill="#344c46">_</tspan></text>
+</svg>

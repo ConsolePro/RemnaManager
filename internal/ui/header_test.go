@@ -18,8 +18,9 @@ func TestServerTimeAndUptime(t *testing.T) {
 	now := time.Date(2026, 11, 10, 5, 42, 48, 0, time.FixedZone("YEKT", 5*3600))
 	m.lastStats = now.Add(-2 * time.Second)
 	m.stats.Uptime = 90060
+	m.stats.OS, m.stats.OSVersion, m.stats.Arch = "Ubuntu", "24.04", "amd64"
 	header := ansi.Strip(m.serverHeader(now))
-	for _, want := range []string{"REMNA MANAGER", "10.11.2026 05:42:48 YEKT", "Аптайм: 1 д 01:01:02", updater.Version, "Remnawave"} {
+	for _, want := range []string{"REMNA MANAGER", "10.11.2026 05:42:48 YEKT", "Аптайм: 1 д 01:01:02", updater.Version, "Remnawave", "Ubuntu 24.04", "amd64"} {
 		if !strings.Contains(header, want) {
 			t.Fatalf("missing %q: %s", want, header)
 		}
@@ -33,6 +34,21 @@ func TestServerTimeAndUptime(t *testing.T) {
 	}
 	if strings.Index(header, updater.Version) < strings.Index(header, "Аптайм") {
 		t.Fatal("version must appear below server time and uptime")
+	}
+}
+
+func TestCompactHeaderKeepsSystemAndArchitecture(t *testing.T) {
+	m := testModel(t, true)
+	m.stats.OS, m.stats.OSVersion, m.stats.Arch = "Debian", "13", "arm64"
+	for _, width := range []int{36, 60, 80, 124} {
+		m.width, m.height = width, 18
+		header := ansi.Strip(m.serverHeader(time.Now()))
+		if !strings.Contains(header, "Debian 13") || !strings.Contains(header, "arm64") {
+			t.Fatal("system information missing", width, header)
+		}
+		if lipgloss.Height(m.View()) > m.height {
+			t.Fatal("header exceeds terminal height", width)
+		}
 	}
 }
 
