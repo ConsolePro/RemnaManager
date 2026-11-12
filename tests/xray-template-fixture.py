@@ -21,7 +21,7 @@ def download(url, limit):
 
 
 def main():
-    tag = "v26.7.28"
+    tag = "v26.11.9"
     release = json.loads(download("https://api.github.com/repos/XTLS/Xray-core/releases/tags/" + tag, 2 << 20))
     if release["tag_name"] != tag or release["draft"] or release["prerelease"]:
         raise RuntimeError("Unexpected Xray release metadata")
