@@ -1,5 +1,6 @@
 """Exercise real installed-manager removal through its TUI in a disposable container."""
 import argparse
+from datetime import datetime, timezone
 import errno
 import fcntl
 import json
@@ -32,7 +33,7 @@ for name in ("install.lock", "remanager.update.lock"):
 configuration = Path("/etc/remnamanager")
 configuration.mkdir(mode=0o700, parents=True, exist_ok=True)
 (configuration / "config.json").write_text(json.dumps({"language": "en", "email": "test@example.com", "initialized": True}))
-(configuration / "update-cache.json").write_text('{"tag_name":"v1.3.1","checked":"2099-01-01T00:00:00Z"}')
+(configuration / "update-cache.json").write_text(json.dumps({"tag_name": "v1.3.1", "checked": datetime.now(timezone.utc).isoformat()}))
 commands = Path("/usr/local/bin")
 commands.mkdir(parents=True, exist_ok=True)
 for name, link in (("remanager", "../lib/remnamanager/remanager"), ("re", "remanager"), ("remna_manager", "remanager")):
