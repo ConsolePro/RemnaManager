@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -31,6 +32,31 @@ type Release struct {
 type Catalog struct {
 	Client *http.Client
 	Repo   string
+}
+
+// List returns recent stable releases from the same trusted repository as Get.
+func (c Catalog) List(ctx context.Context) ([]Release, error) {
+	if c.Repo != "ConsolePro/RemnaManager" && c.Repo != "XTLS/Xray-core" {
+		return nil, errors.New("unsupported release repository")
+	}
+	data, err := c.Read(ctx, "https://api.github.com/repos/"+c.Repo+"/releases?per_page=100", 16<<20)
+	if err != nil {
+		return nil, err
+	}
+	var all []Release
+	if err := json.Unmarshal(data, &all); err != nil {
+		return nil, err
+	}
+	var releases []Release
+	seen := map[string]bool{}
+	for _, release := range all {
+		if !release.Draft && !release.Prerelease && TagPattern.MatchString(release.Version) && !seen[release.Version] {
+			releases = append(releases, release)
+			seen[release.Version] = true
+		}
+	}
+	sort.SliceStable(releases, func(i, j int) bool { return Newer(releases[i].Version, releases[j].Version) })
+	return releases, nil
 }
 
 func (c Catalog) Get(ctx context.Context, tag string) (Release, error) {

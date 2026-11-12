@@ -35,7 +35,9 @@ func (r *Real) manageNodeCore(ctx context.Context, request services.NodeRequest,
 		return services.NodeResult{}, errors.New("finish node recovery before updating Xray")
 	}
 	result := services.NodeResult{}
-	switch request.Action {
+	rollback := strings.HasPrefix(request.Action, "node-core-rollback-")
+	action := strings.Replace(request.Action, "node-core-rollback-", "node-core-", 1)
+	switch action {
 	case "node-core-prepare":
 		if j.CoreUpdateID != "" {
 			result.Version = j.CoreTargetVersion
@@ -46,17 +48,63 @@ func (r *Real) manageNodeCore(ctx context.Context, request services.NodeRequest,
 		if node.IsDisabled || !node.IsConnected {
 			return result, errors.New("enable the node and restore its panel connection before updating Xray")
 		}
+		current, err := currentCoreVersion(node)
+		if err != nil {
+			return result, err
+		}
+		catalog := updater.Catalog{Client: r.Client, Repo: "XTLS/Xray-core"}
+		if rollback {
+			releases, err := catalog.List(ctx)
+			if err != nil {
+				return result, err
+			}
+			for _, release := range releases {
+				if updater.Newer(current, release.Version) {
+					result.Versions = append(result.Versions, release.Version)
+				}
+			}
+			result.Text = "Current Xray: " + current
+			result.TextRU = "Текущее ядро Xray: " + current
+			if len(result.Versions) == 0 {
+				result.NoChange = true
+				result.Text += "\nNo older stable versions found in the recent official releases."
+				result.TextRU += "\nВ последних официальных релизах нет более ранних стабильных версий."
+			}
+			return result, nil
+		}
 		release, err := (updater.Catalog{Client: r.Client, Repo: "XTLS/Xray-core"}).Get(ctx, "latest")
 		if err != nil {
 			return result, err
 		}
+		if !updater.Newer(release.Version, current) {
+			return coreUpToDate(current, release.Version), nil
+		}
 		result.Version = release.Version
-		result.Text = "Xray → " + release.Version
+		result.Text = "Xray " + current + " → " + release.Version
 		result.TextRU = result.Text
 		return result, nil
 	case "node-core-auth":
 		return r.nodeProvision(ctx, services.NodeRequest{Action: "node-install-auth", JobID: j.ID})
 	case "node-core-run":
+		if j.CoreUpdateID == "" {
+			if node.IsDisabled || !node.IsConnected {
+				return result, errors.New("node must be enabled and connected")
+			}
+			current, err := currentCoreVersion(node)
+			if err != nil {
+				return result, err
+			}
+			if !updater.TagPattern.MatchString(request.Value) {
+				return result, errors.New("select an official Xray release version")
+			}
+			if rollback {
+				if !updater.Newer(current, request.Value) {
+					return result, services.LocalizedError("Для отката выберите версию ниже текущей.", "Select a version older than the current core for rollback.")
+				}
+			} else if !updater.Newer(request.Value, current) {
+				return coreUpToDate(current, request.Value), nil
+			}
+		}
 		if j.Params.SSH.IdentityFile == "" {
 			if err := r.installNodeManagedKey(ctx, &j); err != nil {
 				return result, err
@@ -78,6 +126,20 @@ func (r *Real) manageNodeCore(ctx context.Context, request services.NodeRequest,
 		return result, err
 	}
 	return result, errors.New("unknown Xray operation")
+}
+
+func currentCoreVersion(node services.Node) (string, error) {
+	version := "v" + strings.TrimPrefix(strings.TrimSpace(node.XrayVersion), "v")
+	if !updater.TagPattern.MatchString(version) {
+		return "", services.LocalizedError("Панель не сообщила текущую версию Xray. Обновление отменено; восстановите подключение ноды и повторите проверку.", "The panel did not report the current Xray version. Restore the node connection and check again.")
+	}
+	return version, nil
+}
+
+func coreUpToDate(current, latest string) services.NodeResult {
+	return services.NodeResult{NoChange: true,
+		Text:   "Xray core is up to date. Current: " + current + "; release: " + latest + ". No changes made.",
+		TextRU: "Версия ядра Xray актуальная. Текущая: " + current + "; релиз: " + latest + ". Изменения не требуются."}
 }
 func (r *Real) runNodeCoreAgent(ctx context.Context, j NodeJob, action string, assets map[string]coreAsset) (coreState, error) {
 	if !regexp.MustCompile(`^[a-f0-9]{32}$`).MatchString(j.CoreUpdateID) || !updater.TagPattern.MatchString(j.CoreTargetVersion) {

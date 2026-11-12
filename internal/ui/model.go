@@ -94,6 +94,8 @@ type Model struct {
 	nodeRequest                                        services.NodeRequest
 	nodeList                                           []services.Node
 	nodeCursor                                         int
+	nodeCoreVersions                                   []string
+	nodeCoreCursor                                     int
 	nodeTarget                                         services.Node
 	nodeSSH                                            services.NodeSSH
 	nodeSSHChanged                                     bool
@@ -204,7 +206,7 @@ func (m *Model) back() {
 		} else {
 			m.screen = "menu"
 		}
-	case "nodesInput", "nodesResult":
+	case "nodesInput", "nodesResult", "nodesCoreVersions":
 		m.screen = "nodesList"
 	case "nodesTrust":
 		if m.nodeAction == "node-update" || m.nodeAction == "node-reinstall" || m.nodeAction == "node-core" {
@@ -484,7 +486,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateNodeInstallScreen(msg)
 		case "managerInput", "managerConfirm", "managerResult":
 			return m.updateManagerScreen(msg)
-		case "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesResult":
+		case "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesResult", "nodesCoreVersions":
 			return m.updateNodeScreen(msg)
 		case "panelInput", "panelConfirm", "panelResult", "panelCustom", "panelProtection":
 			return m.updatePanelScreen(msg)

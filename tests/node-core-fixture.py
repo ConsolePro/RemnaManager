@@ -34,7 +34,13 @@ def case(scenario):
         (root / "job-id").write_text(job)
         (root / "ready").write_text(job)
         (stack / ".remnamanager-go-node").write_text(job)
-        before = json.dumps({"services": {"remnanode": {"image": image, "environment": {"SECRET_KEY": "preserve-me"}, "network_mode": "host"}}})
+        original = {"image": image, "environment": {"SECRET_KEY": "preserve-me"}, "network_mode": "host"}
+        if scenario in ("downgrade", "downgrade-failure"):
+            previous = stack / "xray/v26.10.31/amd64/xray"
+            previous.parent.mkdir(parents=True)
+            previous.write_bytes(b"previous-core")
+            original["volumes"] = [{"type": "bind", "source": previous.as_posix(), "target": "/usr/local/bin/xray", "read_only": True}]
+        before = json.dumps({"services": {"remnanode": original}})
         (stack / "compose.json").write_text(before)
         archive = fixture / "source.zip"
         with zipfile.ZipFile(archive, "w") as zipped:
@@ -108,7 +114,8 @@ elif args[0]=='exec':
         node = after["services"]["remnanode"]
         assert node["image"] == image and node["environment"]["SECRET_KEY"] == "preserve-me"
         assert node["volumes"][0]["target"] == "/usr/local/bin/xray"
-        action = "rollback" if scenario == "rollback" else "commit"
+        assert len(node["volumes"]) == 1 and version in node["volumes"][0]["source"]
+        action = "rollback" if scenario in ("rollback", "downgrade-failure") else "commit"
         result, log = run(action)
         assert result.returncode == 0, log
         if action == "rollback":
@@ -117,6 +124,6 @@ elif args[0]=='exec':
             assert "RM_CORE_PHASE=committed" in result.stdout
 
 
-for scenario in ("commit", "rollback", "bad-checksum", "bad-version"):
+for scenario in ("commit", "rollback", "downgrade", "downgrade-failure", "bad-checksum", "bad-version"):
     case(scenario)
-print("PASS: Xray prepare/apply/commit, Compose rollback, checksum and version rejection")
+print("PASS: Xray update and downgrade, failure restores previous core, checksum and version rejection")

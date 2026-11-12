@@ -57,7 +57,7 @@ func (m Model) startNodeRequest(request services.NodeRequest) (tea.Model, tea.Cm
 		if request.Action == "node-install-step" {
 			timeout = 20 * time.Minute
 		}
-		if request.Action == "node-update-run" || request.Action == "node-reinstall-run" || request.Action == "node-site-run" || request.Action == "node-core-run" {
+		if request.Action == "node-update-run" || request.Action == "node-reinstall-run" || request.Action == "node-site-run" || request.Action == "node-core-run" || request.Action == "node-core-rollback-run" {
 			timeout = 10 * time.Minute
 		}
 		if request.Action == "node-install-confirm" {
@@ -121,7 +121,7 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 	if len(msg.result.Command) > 0 {
 		cmd := exec.CommandContext(m.ctx, msg.result.Command[0], msg.result.Command[1:]...)
 		run := m.run
-		if msg.action == "node-install-auth" || msg.action == "node-update-auth" || msg.action == "node-reinstall-auth" || msg.action == "node-site-auth" || msg.action == "node-ssh-auth" || msg.action == "node-core-auth" {
+		if msg.action == "node-install-auth" || msg.action == "node-update-auth" || msg.action == "node-reinstall-auth" || msg.action == "node-site-auth" || msg.action == "node-ssh-auth" || msg.action == "node-core-auth" || msg.action == "node-core-rollback-auth" {
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 				action := strings.TrimSuffix(msg.action, "-auth") + "-authenticated"
 				return nodeResultMsg{run, action, services.NodeResult{Install: msg.result.Install}, err}
@@ -133,6 +133,14 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 	}
 	if strings.HasPrefix(msg.action, "node-install-") {
 		return m.receiveNodeInstall(msg)
+	}
+	if msg.result.NoChange {
+		m.screen = "nodesResult"
+		m.panelResult = msg.result.Text
+		if m.cfg.Language != "en" && msg.result.TextRU != "" {
+			m.panelResult = msg.result.TextRU
+		}
+		return m, nil
 	}
 	switch msg.action {
 	case "nodes-list":
@@ -152,18 +160,24 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 			return m, m.inputs[0].Focus()
 		}
 		return m.startNodeRequest(services.NodeRequest{Action: "node-ssh-open", UUID: m.nodeTarget.UUID})
-	case "node-core-auth", "node-core-authenticated":
-		return m.startNodeRequest(services.NodeRequest{Action: "node-core-run", UUID: m.nodeTarget.UUID, Value: m.nodeRequest.Value})
+	case "node-core-auth", "node-core-authenticated", "node-core-rollback-auth", "node-core-rollback-authenticated":
+		return m.startNodeRequest(services.NodeRequest{Action: m.nodeAction + "-run", UUID: m.nodeTarget.UUID, Value: m.nodeRequest.Value})
 	case "node-site-auth", "node-site-authenticated":
 		return m.startNodeRequest(services.NodeRequest{Action: "node-site-run", UUID: m.nodeTarget.UUID, Value: m.nodeRequest.Value})
 	case "node-update-auth", "node-reinstall-auth", "node-update-authenticated", "node-reinstall-authenticated":
 		return m.startNodeRequest(services.NodeRequest{Action: strings.TrimSuffix(strings.TrimSuffix(msg.action, "-authenticated"), "-auth") + "-run", UUID: m.nodeTarget.UUID})
-	case "node-core-prepare", "node-ssh-prepare", "node-update-prepare", "node-reinstall-prepare":
-		if msg.action == "node-core-prepare" || msg.action == "node-update-prepare" || msg.action == "node-reinstall-prepare" {
+	case "node-core-prepare", "node-core-rollback-prepare", "node-ssh-prepare", "node-update-prepare", "node-reinstall-prepare":
+		if msg.action == "node-core-prepare" || msg.action == "node-core-rollback-prepare" || msg.action == "node-update-prepare" || msg.action == "node-reinstall-prepare" {
 			m.panelResult = msg.result.Text
 			if m.cfg.Language != "en" && msg.result.TextRU != "" {
 				m.panelResult = msg.result.TextRU
 			}
+		}
+		if msg.action == "node-core-rollback-prepare" && len(msg.result.Versions) > 0 {
+			m.nodeCoreVersions = msg.result.Versions
+			m.nodeCoreCursor = 0
+			m.screen = "nodesCoreVersions"
+			return m, nil
 		}
 		if msg.action != "node-ssh-prepare" {
 			m.nodeRequest = services.NodeRequest{Action: m.nodeAction + "-auth", UUID: m.nodeTarget.UUID, Value: msg.result.Version}
@@ -198,6 +212,22 @@ func (m *Model) prepareNodeSSHInputs() {
 func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	switch m.screen {
+	case "nodesCoreVersions":
+		if len(m.nodeCoreVersions) == 0 {
+			return m, nil
+		}
+		switch key {
+		case "up", "shift+tab":
+			m.nodeCoreCursor = (m.nodeCoreCursor + len(m.nodeCoreVersions) - 1) % len(m.nodeCoreVersions)
+		case "down", "tab":
+			m.nodeCoreCursor = (m.nodeCoreCursor + 1) % len(m.nodeCoreVersions)
+		case "enter", "right":
+			if len(m.nodeCoreVersions) > 0 {
+				version := m.nodeCoreVersions[m.nodeCoreCursor]
+				m.nodeRequest = services.NodeRequest{Action: "node-core-rollback-auth", UUID: m.nodeTarget.UUID, Value: version}
+				m.screen = "nodesConfirm"
+			}
+		}
 	case "nodesList":
 		switch key {
 		case "up", "shift+tab":
@@ -246,7 +276,7 @@ func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.focus = 0
 				m.screen = "nodesInput"
 				return m, m.inputs[0].Focus()
-			case "node-core", "node-update", "node-reinstall":
+			case "node-core", "node-core-rollback", "node-update", "node-reinstall":
 				return m.startNodeRequest(services.NodeRequest{Action: m.nodeAction + "-prepare", UUID: m.nodeTarget.UUID})
 			}
 		}
@@ -357,6 +387,18 @@ func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) nodesView() string {
 	title := accent.Render(m.nodeTitle)
 	switch m.screen {
+	case "nodesCoreVersions":
+		rows := []string{title, "", m.panelResult, "", m.l("Выберите версию для отката:", "Select a version for rollback:")}
+		// Keep the selected release visible even in a small terminal.
+		start := max(0, m.nodeCoreCursor-3)
+		for i := start; i < min(len(m.nodeCoreVersions), start+7); i++ {
+			line := "  " + m.nodeCoreVersions[i]
+			if i == m.nodeCoreCursor {
+				line = accent.Render("› " + m.nodeCoreVersions[i])
+			}
+			rows = append(rows, line)
+		}
+		return strings.Join(rows, "\n")
 	case "nodesProgress":
 		if m.nodeAction == "node-reinstall" {
 			return title + "\n\n" + m.l("Пересоздание контейнера ноды…\nСохранённые ключи и версия образа сохраняются.\nПри ошибке будет выполнена попытка отката.\nДля восстановления прерванной операции выберите этот пункт повторно.", "Recreating the node container…\nSaved keys and the pinned image version are retained.\nFailure triggers a rollback attempt.\nSelect this operation again to recover an interrupted attempt.")
@@ -422,8 +464,11 @@ func (m Model) nodesView() string {
 	case "nodesConfirm":
 		text := title + "\n\n" + m.nodeTarget.Name + " · " + m.nodeTarget.Address + "\nUUID: " + m.nodeTarget.UUID + "\n\n"
 		switch m.nodeAction {
-		case "node-core":
-			text += m.panelResult + "\n\n" + warning.Render(m.l("Будет обновлено только ядро Xray. Образ ноды и профиль сохраняются.\nКонтейнер перезапустится; клиентские соединения могут оборваться.\nПри ошибке проверки версии, связи с панелью или HTTPS выполняется откат.", "Only the Xray core will change. The node image and profile are retained.\nThe container will restart; client connections may drop.\nFailure to verify the version, panel connection or HTTPS triggers rollback."))
+		case "node-core", "node-core-rollback":
+			if m.nodeAction == "node-core-rollback" {
+				text += m.l("Откат Xray до ", "Roll back Xray to ") + m.nodeRequest.Value + "\n"
+			}
+			text += m.panelResult + "\n\n" + warning.Render(m.l("Будет установлено только выбранное ядро Xray. Образ ноды и профиль сохраняются.\nКонтейнер перезапустится; клиентские соединения могут оборваться.\nПри ошибке проверки версии, связи с панелью или HTTPS выполняется откат.", "Only the selected Xray core will be installed. The node image and profile are retained.\nThe container will restart; client connections may drop.\nFailure to verify the version, panel connection or HTTPS triggers rollback."))
 		case "node-site":
 			text += m.l("Новый шаблон: ", "New template: ") + m.nodeRequest.Value + "\n\n" + m.l("Будут заменены только страницы сайта. После проверки HTTPS шаблон сохранится автоматически; при ошибке вернётся прежний сайт.", "Website pages will be replaced. HTTPS verification commits the template automatically; failure restores the previous website.")
 		case "node-rename":

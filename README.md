@@ -42,7 +42,7 @@ sudo re
 <summary>Установка конкретной версии</summary>
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ConsolePro/RemnaManager/main/install.sh | sudo bash -s -- --version v1.2.1
+curl -fsSL https://raw.githubusercontent.com/ConsolePro/RemnaManager/main/install.sh | sudo bash -s -- --version v1.2.2
 ```
 
 Версии и готовые бинарники: [GitHub Releases](https://github.com/ConsolePro/RemnaManager/releases).
@@ -58,7 +58,7 @@ curl -fsSL https://raw.githubusercontent.com/ConsolePro/RemnaManager/main/instal
 | **Установка нод** | Подключение от root, создание SSH-ключа, Docker, сайт прикрытия, сертификат, профиль VLESS REALITY, регистрация в панели и firewall с откатом. Прерванную установку можно продолжить. |
 | **Управление нодами** | Список и статус, переименование, включение и отключение в панели, перезапуск Xray, интерактивный SSH, обновление и переустановка контейнера. |
 | **Сайты прикрытия** | Готовые шаблоны selfsteal, смена шаблона с проверкой HTTPS и откатом, автоматическое продление сертификатов через acme.sh. |
-| **Обновления** | Отдельное обновление ядра Xray; обновление менеджера из готовых бинарников; выбор версии и локальный откат. |
+| **Обновления** | Обновление Xray после сравнения версий и ручной откат на более ранний официальный релиз; обновление менеджера из готовых бинарников; выбор версии и локальный откат. |
 | **Информация о сервере** | ОС, её версия и архитектура, дата и время, аптайм, CPU, RAM, SWAP, диск и IP-адреса. |
 
 ### Установка ноды без постоянных ручных подключений

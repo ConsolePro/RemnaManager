@@ -53,6 +53,7 @@ type Node struct {
 	Port        int    `json:"port"`
 	IsConnected bool   `json:"isConnected"`
 	IsDisabled  bool   `json:"isDisabled"`
+	XrayVersion string `json:"xrayVersion"`
 }
 
 type NodeSSH struct {
@@ -98,6 +99,8 @@ type NodeInstallStatus struct {
 
 type NodeResult struct {
 	Version          string
+	Versions         []string
+	NoChange         bool
 	Nodes            []Node
 	SSH              NodeSSH
 	Fingerprint      string

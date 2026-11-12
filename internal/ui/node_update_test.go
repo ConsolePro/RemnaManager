@@ -9,7 +9,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-type updateNodeFake struct{ nodeFake }
+type updateNodeFake struct {
+	nodeFake
+	coreCurrent bool
+}
 
 func (f *updateNodeFake) ManageNodes(ctx context.Context, req services.NodeRequest) (services.NodeResult, error) {
 	if req.Action == "nodes-list" {
@@ -18,13 +21,72 @@ func (f *updateNodeFake) ManageNodes(ctx context.Context, req services.NodeReque
 	f.requests = append(f.requests, req)
 	switch req.Action {
 	case "node-core-prepare":
+		if f.coreCurrent {
+			return services.NodeResult{NoChange: true, TextRU: "Версия ядра Xray актуальная."}, nil
+		}
 		return services.NodeResult{Version: "v26.9.9", Text: "Xray → v26.9.9"}, nil
+	case "node-core-rollback-prepare":
+		return services.NodeResult{Versions: []string{"v26.9.9", "v26.7.28"}, Text: "Current Xray: v26.10.31"}, nil
 	case "node-update-prepare", "node-reinstall-prepare":
 		return services.NodeResult{SSH: services.NodeSSH{Host: "node.example.test", Port: 22}, Fingerprint: "SHA256:verified-update-key", Text: "remnawave/node@sha256:" + strings.Repeat("a", 64)}, nil
-	case "node-core-auth", "node-update-auth", "node-reinstall-auth":
+	case "node-core-auth", "node-core-rollback-auth", "node-update-auth", "node-reinstall-auth":
 		return services.NodeResult{Command: []string{"ssh", "fixture"}}, nil
 	}
 	return services.NodeResult{TextRU: "Обновление завершено"}, nil
+}
+
+func TestCurrentXrayDoesNotAskForConfirmationOrSSH(t *testing.T) {
+	m := testModel(t, true)
+	f := &updateNodeFake{coreCurrent: true}
+	m.service = f
+	next, cmd := m.openNodeOperation(operation("Ядро Xray", "Xray core", "node-core"))
+	m = next.(Model)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	cmd = press(&m, tea.KeyEnter)
+	next, cmd = m.Update(cmd())
+	m = next.(Model)
+	if m.screen != "nodesResult" || cmd != nil || len(f.requests) != 2 || !strings.Contains(m.View(), "актуальная") {
+		t.Fatal("up-to-date core should stop before authentication", m.screen, f.requests)
+	}
+}
+
+func TestRollbackSelectionSurvivesConfirmationAndAuthentication(t *testing.T) {
+	m := testModel(t, true)
+	f := &updateNodeFake{}
+	m.service = f
+	next, cmd := m.openNodeOperation(operation("Откатить ядро Xray", "Roll back Xray", "node-core-rollback"))
+	m = next.(Model)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	cmd = press(&m, tea.KeyEnter)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if m.screen != "nodesCoreVersions" || !strings.Contains(m.View(), "v26.7.28") {
+		t.Fatal("missing release selection", m.screen)
+	}
+	press(&m, tea.KeyDown)
+	for _, size := range [][2]int{{36, 18}, {80, 24}, {124, 40}} {
+		m.width, m.height = size[0], size[1]
+		if !strings.Contains(m.View(), "v26.7.28") {
+			t.Fatalf("selected rollback version hidden at %dx%d", m.width, m.height)
+		}
+	}
+	press(&m, tea.KeyEnter)
+	if m.screen != "nodesConfirm" || m.nodeRequest.Value != "v26.7.28" || len(f.requests) != 2 {
+		t.Fatal("rollback ran before confirmation")
+	}
+	cmd = press(&m, tea.KeyEnter)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	next, cmd = m.Update(nodeResultMsg{run: m.run, action: "node-core-rollback-authenticated"})
+	m = next.(Model)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	last := f.requests[len(f.requests)-1]
+	if m.screen != "nodesResult" || last.Action != "node-core-rollback-run" || last.Value != "v26.7.28" {
+		t.Fatal("selected rollback lost", last)
+	}
 }
 
 func TestNodeUpdateRequiresSelectionTrustAndExplicitConfirmation(t *testing.T) {
