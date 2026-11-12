@@ -22,7 +22,7 @@ else
     if ip link show rmwarp >/dev/null 2>&1; then failure; fi
     if ip link show warp >/dev/null 2>&1; then failure; fi
     [[ ! -e /etc/systemd/system/$unit.service && ! -e /etc/systemd/system/$guard.service ]]
-    if ip -4 rule show | grep -Eq '(^5188[89]:|fwmark 0xcab0)'; then failure; fi
+    if ip -4 rule show | grep -Eq '(^1000[01]:|^5188[89]:|fwmark 0xcab0)'; then failure; fi
     [[ -z $(ip -4 route show table 51888 2>/dev/null || true) ]]
     if command -v nft >/dev/null && nft list table inet remnamanager_warp_native >/dev/null 2>&1; then failure; fi
     [[ $RM_WARP_ACTION == install ]]
@@ -30,7 +30,7 @@ else
     chmod 0700 "$dir"
     printf '%s\n' "$RM_JOB_ID" >"$dir/owner"
 fi
-for path in "$dir/owner" "$dir/wgcf" "$dir/wgcf-account.toml" "$dir/wgcf-profile.conf" "$dir/rmwarp.conf" "$dir/capabilities.json" "$dir/install.log"; do [[ ! -L $path ]]; done
+for path in "$dir/owner" "$dir/wgcf" "$dir/wgcf-account.toml" "$dir/wgcf-profile.conf" "$dir/rmwarp.conf" "$dir/capabilities.json" "$dir/install.log" "$dir/endpoint"; do [[ ! -L $path ]]; done
 exec >>"$dir/install.log" 2>&1
 printf 'WARP action: %s\n' "$RM_WARP_ACTION"
 compose() { docker compose --project-directory "$stack" -f "$stack/compose.json" "$@"; }
@@ -101,6 +101,31 @@ install)
     public=$(awk '/^PublicKey *=/{sub(/^[^=]*=[[:space:]]*/,"");print;exit}' wgcf-profile.conf)
     address=$(awk -F' *= *' '/^Address *=/{n=split($2,a,",");for(i=1;i<=n;i++){gsub(/ /,"",a[i]);if(a[i]~/^[0-9.]+\/32$/){print a[i];exit}}}' wgcf-profile.conf)
     [[ $private =~ ^[A-Za-z0-9+/]{43}=$ && $public =~ ^[A-Za-z0-9+/]{43}=$ && $address =~ ^[0-9.]+/32$ ]]
+    stage=foreign
+    # Check new priority slots before stopping a managed service.
+    ip -j -4 rule show | jq -e --arg source "${address%/32}" '
+      all(.[];
+        (.priority != 10000 and .priority != 10001 and .priority != 51888 and .priority != 51889) or
+        ((.table|tostring)=="51888" and (.dst//"all")=="all" and
+         if .priority==10000 or .priority==51888 then
+           (.src//"all")=="all" and .fwmark=="0xcab0" and
+           ((.fwmask//"0xffffffff") == "0xffffffff") and
+           ((keys-["priority","src","dst","fwmark","fwmask","table","protocol"])|length)==0
+         else
+           (.src==$source or .src==($source+"/32")) and
+           ((keys-["priority","src","dst","table","protocol"])|length)==0
+         end))' >/dev/null
+    # Down must still read OLD PostDown commands during migration.
+    if [[ -f /etc/systemd/system/$unit.service ]]; then systemctl stop "$unit.service"; fi
+    for priority in 51888 10000; do
+        while ip -4 rule del priority "$priority" fwmark 51888 lookup 51888 2>/dev/null; do :; done
+    done
+    for priority in 51889 10001; do
+        while ip -4 rule del priority "$priority" from "$address" lookup 51888 2>/dev/null; do :; done
+    done
+    endpoint=162.159.192.1:2408
+    if [[ -f endpoint ]]; then endpoint=$(cat endpoint); fi
+    [[ $endpoint =~ ^162\.159\.192\.1:(2408|500|1701|4500)$ ]]
     cat >"rmwarp.conf" <<EOF
 [Interface]
 PrivateKey = $private
@@ -108,15 +133,15 @@ Address = $address
 MTU = 1280
 Table = off
 PostUp = ip -4 route replace default dev %i table 51888
-PostUp = ip -4 rule add priority 51888 fwmark 51888 lookup 51888
-PostUp = ip -4 rule add priority 51889 from $address lookup 51888
-PostDown = ip -4 rule del priority 51888 fwmark 51888 lookup 51888 || true
-PostDown = ip -4 rule del priority 51889 from $address lookup 51888 || true
+PostUp = ip -4 rule add priority 10000 fwmark 51888 lookup 51888
+PostUp = ip -4 rule add priority 10001 from $address lookup 51888
+PostDown = ip -4 rule del priority 10000 fwmark 51888 lookup 51888 || true
+PostDown = ip -4 rule del priority 10001 from $address lookup 51888 || true
 PostDown = ip -4 route flush table 51888
 [Peer]
 PublicKey = $public
 AllowedIPs = 0.0.0.0/0
-Endpoint = 162.159.192.1:2408
+Endpoint = $endpoint
 PersistentKeepalive = 25
 EOF
     chmod 0600 wgcf-account.toml wgcf-profile.conf rmwarp.conf
@@ -170,13 +195,34 @@ EOF
     systemctl enable --now "$guard.service"
     systemctl enable "$unit.service"
     systemctl restart "$unit.service"
+    stage=route
+    source_route=$(ip -4 route get 1.1.1.1 from "${address%/32}")
+    marked_route=$(ip -4 route get 1.1.1.1 mark 51888)
+    printf 'WARP source route: %s\nWARP marked route: %s\n' "$source_route" "$marked_route"
+    [[ $(awk '{for(i=1;i<NF;i++)if($i=="dev"){print $(i+1);exit}}' <<<"$source_route") == rmwarp ]]
+    [[ $(awk '{for(i=1;i<NF;i++)if($i=="dev"){print $(i+1);exit}}' <<<"$marked_route") == rmwarp ]]
     stage=trace
     verified=0
-    for attempt in 1 2 3 4; do
-        printf 'WARP network probe %s\n' "$attempt"
-        if curl --proto '=https' -fSs --max-time 12 --interface "${address%/32}" https://www.cloudflare.com/cdn-cgi/trace | grep -Eq '^warp=(on|plus)'; then verified=1; break; fi
-        sleep 2
+    # Cloudflare's documented fallback ports; no arbitrary endpoint scans.
+    for candidate in "$endpoint" 162.159.192.1:2408 162.159.192.1:500 162.159.192.1:1701 162.159.192.1:4500; do
+        [[ " ${tested_endpoints:-} " != *" $candidate "* ]] || continue
+        tested_endpoints="${tested_endpoints:-} $candidate"
+        wg set rmwarp peer "$public" endpoint "$candidate"
+        printf 'WARP network probe: %s\n' "$candidate"
+        if curl --ipv4 --noproxy '*' --proto '=https' -fSs --connect-timeout 6 --max-time 12 --interface "${address%/32}" https://www.cloudflare.com/cdn-cgi/trace | grep -Eq '^warp=(on|plus)'; then
+            verified=1
+            sed -i "s/^Endpoint = .*/Endpoint = $candidate/" rmwarp.conf
+            printf '%s\n' "$candidate" >endpoint
+            break
+        fi
+        wg show rmwarp latest-handshakes | awk '{print "WARP handshake timestamp: " $2}'
+        wg show rmwarp transfer | awk '{print "WARP transfer: received=" $2 " sent=" $3}'
     done
+    if [[ $verified != 1 ]]; then
+        wg set rmwarp peer "$public" endpoint "$endpoint"
+        handshake=$(wg show rmwarp latest-handshakes | awk '{if($2>latest)latest=$2}END{print latest+0}')
+        if [[ $handshake == 0 ]]; then stage=handshake; fi
+    fi
     [[ $verified == 1 ]]
     stage=capabilities
     if [[ ! -f capabilities.json ]]; then

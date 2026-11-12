@@ -205,6 +205,14 @@ func (r *Real) runNodeWarpAgent(ctx context.Context, j NodeJob, action string, a
 	prefix := fmt.Sprintf("set +x\nRM_JOB_ID='%s'\nRM_WARP_ACTION='%s'\nRM_WARP_ASSETS='%s'\nRM_WARP_CONFIG='%s'\n", j.ID, action, base64.StdEncoding.EncodeToString(data), base64.StdEncoding.EncodeToString(config))
 	out, err := r.Runner.Run(ctx, append([]byte(prefix), nodeWarpAgent...), "ssh", args...)
 	if err != nil {
+		for code, message := range map[string][2]string{
+			"route":     {"Маршрут WARP не ведёт через rmwarp. Установка остановлена до применения профиля Xray. Проверьте конфликт правил policy routing.", "WARP route does not use rmwarp; stopped before applying the Xray profile. Check policy routing conflicts."},
+			"handshake": {"WireGuard не получил ответ Cloudflare ни на одном из проверенных UDP-портов. Маршруты через rmwarp проверены; проверьте доступность Cloudflare и UDP у провайдера. Аккаунт сохранён.", "No WireGuard handshake from Cloudflare on the tested UDP ports. rmwarp routes were verified; check Cloudflare/UDP reachability. Account retained."},
+		} {
+			if strings.Contains(string(out), "RM_WARP_FAILURE="+code+"\n") {
+				return services.WrapLocalized(err, message[0]+" Журнал: /opt/remnanode/warp/install.log", message[1])
+			}
+		}
 		codes := map[string][2]string{"dependencies": {"Не удалось установить WireGuard и зависимости. Проверьте apt на ноде.", "WireGuard dependency installation failed."}, "register": {"Cloudflare не выдал аккаунт WARP. Проверьте доступ ноды к Cloudflare и повторите установку.", "Cloudflare WARP registration failed; check node connectivity and retry."}, "trace": {"WARP не прошёл сетевую проверку. Профиль Xray не применялся; проверьте UDP-доступ ноды к Cloudflare.", "WARP network probe failed; Xray profile was not applied. Check outbound UDP to Cloudflare."}, "validate": {"Профиль с WARP не прошёл проверку ядром ноды. Рабочий профиль сохранён.", "Node Xray rejected the WARP profile; existing profile retained."}, "foreign": {"На ноде найдены чужие настройки WARP или занятые сетевые правила. Они сохранены.", "Foreign WARP configuration or conflicting routing rules found; preserved."}}
 		for code, message := range codes {
 			if strings.Contains(string(out), "RM_WARP_FAILURE="+code+"\n") {

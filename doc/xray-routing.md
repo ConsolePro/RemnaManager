@@ -49,6 +49,12 @@ Systemd-службы ссылаются на этот каталог. DNS сис
 
 Используется IPv4-выход WARP. Таблица 51888 обслуживает только помеченные
 соединения и источник интерфейса; основной маршрут сервера и SSH сохраняются.
+Правила имеют приоритеты 10000/10001, до системного main с приоритетом 32766.
+При повторной установке старые управляемые правила 51888/51889 заменяются
+автоматически, а аккаунт сохраняется. Перед проверкой Cloudflare установщик
+проверяет фактический маршрут для источника WARP и метки: оба должны вести
+через rmwarp. При недоступности UDP 2408 пробуются официальные резервные
+порты 500, 1701 и 4500 на том же адресе Cloudflare; рабочий endpoint сохраняется.
 `rm-native-warp` привязан к `rmwarp` и mark 51888. Nftables блокирует выход
 помеченного трафика через другой интерфейс. Добавленные NET_ADMIN/NET_RAW
 сохраняются при обновлении контейнера ноды.
@@ -107,3 +113,5 @@ Go-тесты проверяют изменение существующего �
 - [Директивы XRAY_JSON](https://docs.rw/learn/xray-json-advanced/).
 - [WARP Native в примере eGames](https://github.com/eGamesAPI/remnawave-reverse-proxy/blob/main/src/modules/warp.sh).
 - [wgcf](https://github.com/ViRb3/wgcf).
+- [Порядок правил Linux ip rule](https://github.com/iproute2/iproute2/blob/main/man/man8/ip-rule.8.in).
+- [Порты WireGuard Cloudflare](https://github.com/cloudflare/cloudflare-docs/blob/production/src/content/docs/cloudflare-one/team-and-resources/devices/cloudflare-one-client/deployment/firewall.mdx).

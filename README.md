@@ -42,7 +42,7 @@ sudo re
 <summary>Установка конкретной версии</summary>
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ConsolePro/RemnaManager/main/install.sh | sudo bash -s -- --version v1.5.0
+curl -fsSL https://raw.githubusercontent.com/ConsolePro/RemnaManager/main/install.sh | sudo bash -s -- --version v1.5.1
 ```
 
 Версии и готовые бинарники: [GitHub Releases](https://github.com/ConsolePro/RemnaManager/releases).

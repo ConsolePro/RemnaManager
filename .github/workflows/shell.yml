@@ -36,6 +36,17 @@ jobs:
           docker run --rm -e RM_CONTAINER_TESTS=1 -v "$PWD:/source:ro"
           '${{ matrix.image }}' bash -c
           'apt-get update && apt-get install -y python3 && bash /source/tests/go-installer.sh'
+  warp-routing-kernel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify WARP policy routing in an isolated kernel namespace
+        run: >-
+          docker run --rm --cap-add NET_ADMIN -e RM_CONTAINER_TESTS=1
+          -v "$PWD/tests/warp-routing-kernel.sh:/test.sh:ro"
+          -v "$PWD/internal/installer/node_warp_agent.sh:/agent.sh:ro"
+          debian:13 bash -c
+          'apt-get update && apt-get install -y iproute2 && bash /test.sh /agent.sh'
   verify:
     runs-on: ubuntu-latest
     steps:
