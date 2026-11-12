@@ -133,3 +133,19 @@ func TestInvalidGraphsDoNotRender(t *testing.T) {
 		})
 	}
 }
+
+func TestOversizedSchemeIsRefusedBeforeRendering(t *testing.T) {
+	spec := testSpec()
+	// Each rule is individually valid, but the combined recipe must remain
+	// small enough to journal its config and creation snapshot safely.
+	rule := services.RoutingRule{Target: "direct", Domains: []string{}}
+	for i := 0; i < 128; i++ {
+		rule.Domains = append(rule.Domains, "domain:"+strings.Repeat("a", 120)+".example.com")
+	}
+	for i := 0; i < 40; i++ {
+		spec.Rules = append(spec.Rules, rule)
+	}
+	if _, err := Render(spec, []byte(baseTemplate)); err == nil {
+		t.Fatal("oversized scheme was rendered")
+	}
+}

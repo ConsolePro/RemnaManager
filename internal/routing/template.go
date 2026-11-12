@@ -29,6 +29,9 @@ func ValidGroupName(name string) bool {
 func invalid(ru, en string) error { return services.LocalizedError(ru, en) }
 
 func Validate(spec services.RoutingSpec) error {
+	if data, err := json.Marshal(spec); err != nil || len(data) > 512<<10 {
+		return invalid("Схема слишком большая: сократите правила или дополнительные выходы (максимум 512 КиБ).", "Scheme is too large: reduce rules or explicit outbounds (512 KiB maximum).")
+	}
 	if !namePattern.MatchString(spec.Name) || strings.TrimSpace(spec.Name) != spec.Name {
 		return invalid("Имя схемы: 2–48 латинских букв, цифр, пробелов, дефисов или подчёркиваний.", "Scheme name must be 2–48 Latin letters, digits, spaces, dashes or underscores.")
 	}

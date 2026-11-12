@@ -143,11 +143,17 @@ func (r *Real) saveRoutingJob(j routingJob) error {
 	if err != nil {
 		return err
 	}
+	if len(data) > 8<<20 {
+		return services.LocalizedError("Журнал схемы слишком большой. Сократите исходный шаблон или правила.", "Scheme journal is too large; reduce the base template or rules.")
+	}
 	dir := filepath.Join(r.Root, "routing")
 	if err := noSymlinkParents(dir); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, 0700); err != nil {
 		return err
 	}
 	return writeFile(filepath.Join(dir, j.ID+".json"), data, 0600)
@@ -166,7 +172,7 @@ func (r *Real) loadRoutingJob(id string) (routingJob, error) {
 	if err != nil {
 		return job, err
 	}
-	if len(data) > 4<<20 || json.Unmarshal(data, &job) != nil || job.ID != id || job.Version != 1 || !json.Valid(job.Config) || routing.Validate(job.Spec) != nil || job.Name != "RM_"+strings.ReplaceAll(job.Spec.Name, " ", "_")+"_"+id {
+	if len(data) > 8<<20 || json.Unmarshal(data, &job) != nil || job.ID != id || job.Version != 1 || !json.Valid(job.Config) || routing.Validate(job.Spec) != nil || job.Name != "RM_"+strings.ReplaceAll(job.Spec.Name, " ", "_")+"_"+id {
 		return job, services.LocalizedError("Журнал схемы повреждён. Автоматическое изменение шаблона запрещено.", "Scheme journal is invalid; refusing to modify a template.")
 	}
 	if job.TemplateUUID != "" && !nodeUUIDPattern.MatchString(job.TemplateUUID) {
