@@ -17,6 +17,7 @@ import (
 )
 
 type routingUI struct {
+	Quick                                    bool
 	Inventory                                services.RoutingResult
 	Spec                                     services.RoutingSpec
 	Scheme                                   *services.RoutingScheme
@@ -39,7 +40,8 @@ func (m Model) openRouting(action string) (tea.Model, tea.Cmd) {
 	}
 	m.routes = routingUI{Operation: action}
 	if action == "route-create" {
-		return m.startRouting(services.RoutingRequest{Action: "route-inventory"})
+		m.routes.Quick = true
+		return m.startRouting(services.RoutingRequest{Action: "route-quick-inventory"})
 	}
 	return m.startRouting(services.RoutingRequest{Action: "route-list"})
 }
@@ -80,23 +82,33 @@ func (m Model) receiveRouting(msg routingMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.routes.Text = ""
 		m.screen, m.problem = "routeResult", m.errorText(msg.err)
+		if msg.action == "route-preview" {
+			m.screen, m.routes.Cursor = "routeEditor", 5
+		}
+		if msg.action == "route-quick-preview" {
+			m.screen = "routeQuickNodes"
+		}
 		return m, nil
 	}
 	m.routes.Cursor = 0
 	switch msg.action {
-	case "route-inventory":
+	case "route-inventory", "route-quick-inventory":
 		m.routes.Inventory = msg.result
 		m.screen = "routeTemplates"
 	case "route-list":
 		m.routes.Inventory = msg.result
+		m.routes.Operation = "route-list"
 		m.screen = "routeList"
-	case "route-preview":
+	case "route-preview", "route-quick-preview":
 		m.screen = "routeConfirm"
 		m.routes.Text = msg.result.Text
 		if m.cfg.Language != "en" {
 			m.routes.Text = msg.result.TextRU
 		}
 		m.routes.Request = services.RoutingRequest{Action: "route-apply", ID: msg.result.Scheme.ID}
+		if m.routes.Quick {
+			m.routes.Request.Action = "route-quick-apply"
+		}
 	default:
 		m.screen = "routeResult"
 		m.routes.Text = msg.result.Text
@@ -173,6 +185,8 @@ func (m Model) routeItemCount() int {
 		return len(m.routes.Inventory.Templates)
 	case "routeHosts":
 		return len(m.routes.Inventory.Hosts)
+	case "routeQuickNodes":
+		return len(m.routes.Inventory.Nodes)
 	case "routeEditor":
 		return 6
 	case "routePools":
@@ -284,6 +298,13 @@ func (m Model) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if key == " " && m.screen == "routeQuickNodes" && count > 0 {
+		node := m.routes.Inventory.Nodes[m.routes.Cursor]
+		if !node.IsDisabled {
+			m.routes.Selection[node.UUID] = !m.routes.Selection[node.UUID]
+		}
+		return m, nil
+	}
 	if m.screen == "routeRules" && (key == "ctrl+up" || key == "ctrl+down") && m.routes.Cursor < len(m.routes.Spec.Rules) {
 		i, j := m.routes.Cursor, m.routes.Cursor-1
 		if key == "ctrl+down" {
@@ -332,8 +353,26 @@ func (m Model) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if count == 0 {
 			return m, nil
 		}
+		if m.routes.Quick {
+			m.routes.Spec = services.RoutingSpec{BaseTemplateUUID: m.routes.Inventory.Templates[m.routes.Cursor].UUID}
+			m.routes.Selection = map[string]bool{}
+			m.routes.Cursor, m.screen = 0, "routeQuickNodes"
+			return m, nil
+		}
 		m.routes.Spec = services.RoutingSpec{Name: "Client_route", BaseTemplateUUID: m.routes.Inventory.Templates[m.routes.Cursor].UUID, DefaultTarget: "main", Pools: []services.RoutingPool{{Name: "main"}}, Rules: []services.RoutingRule{{Target: "direct", Domains: []string{"domain:ru", "domain:su", "domain:xn--p1ai", "geosite:category-ru"}, IPs: []string{"geoip:ru"}}}}
 		m.routeOpenHosts(0)
+	case "routeQuickNodes":
+		ids := []string{}
+		for _, node := range m.routes.Inventory.Nodes {
+			if m.routes.Selection[node.UUID] && !node.IsDisabled {
+				ids = append(ids, node.UUID)
+			}
+		}
+		if len(ids) == 0 {
+			m.problem = m.l("Отметьте ноды пробелом, затем нажмите Enter.", "Select nodes with Space, then press Enter.")
+			return m, nil
+		}
+		return m.startRouting(services.RoutingRequest{Action: "route-quick-preview", Spec: m.routes.Spec, Nodes: ids})
 	case "routeHosts":
 		selected := []string{}
 		for _, host := range m.routes.Inventory.Hosts {
@@ -441,6 +480,10 @@ func (m Model) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.screen = "routeConfirm"
 		m.routes.Text = m.l("Продолжить выбранную операцию с управляемым шаблоном? Подключения и сквады сохраняются.", "Continue this operation on the managed template? Hosts and squads are retained.")
 	case "routeResult":
+		if m.routes.Quick {
+			m.screen = "menu"
+			return m, nil
+		}
 		return m.startRouting(services.RoutingRequest{Action: "route-list"})
 	}
 	return m, nil
@@ -492,10 +535,14 @@ func (m *Model) backRouting() {
 	m.problem, m.scroll = "", 0
 	m.routes.Cursor = 0
 	switch m.screen {
-	case "routeTemplates", "routeList":
+	case "routeTemplates", "routeList", "routeEditor", "routeResult":
 		m.screen = "menu"
 	case "routeProgress":
-		if m.routes.Spec.BaseTemplateUUID != "" {
+		if m.routes.Quick && m.routes.Spec.BaseTemplateUUID != "" {
+			m.screen = "routeQuickNodes"
+		} else if m.routes.Operation == "route-list" && len(m.routes.Inventory.Schemes) > 0 {
+			m.screen = "routeList"
+		} else if m.routes.Spec.BaseTemplateUUID != "" {
 			m.screen = "routeEditor"
 		} else {
 			m.screen = "menu"
@@ -512,14 +559,30 @@ func (m *Model) backRouting() {
 		m.screen = "routePools"
 	case "routeExitInput":
 		m.screen = "routeExits"
-	case "routeDetails", "routeResult":
+	case "routeHosts":
+		pool := m.routes.Pool
+		if len(m.routes.Spec.Pools[pool].Hosts) == 0 {
+			if pool == 0 {
+				m.screen = "routeTemplates"
+			} else {
+				m.routes.Spec.Pools = append(m.routes.Spec.Pools[:pool], m.routes.Spec.Pools[pool+1:]...)
+				m.screen = "routePools"
+			}
+		} else {
+			m.screen = "routePools"
+		}
+	case "routeDetails":
 		m.screen = "routeList"
 	case "routeConfirm":
-		if m.routes.Operation == "route-list" {
+		if m.routes.Quick {
+			m.screen = "routeQuickNodes"
+		} else if m.routes.Operation == "route-list" {
 			m.screen = "routeDetails"
 		} else {
 			m.screen = "routeEditor"
 		}
+	case "routeQuickNodes":
+		m.screen = "routeTemplates"
 	default:
 		m.screen = "routeEditor"
 	}
@@ -532,9 +595,22 @@ func (m Model) routingView() string {
 	case "routeProgress":
 		rows = append(rows, m.l("Проверяю данные и выполняю операцию…", "Checking data and performing the operation…"))
 	case "routeTemplates":
-		rows = append(rows, m.l("Выберите исходный клиентский шаблон:", "Select a base client template:"))
+		rows = append(rows, m.l("Выберите существующий шаблон XRAY_JSON для изменения:", "Select an existing XRAY_JSON template to update:"))
 		for _, value := range m.routes.Inventory.Templates {
 			list = append(list, value.Name)
+		}
+	case "routeQuickNodes":
+		rows = append(rows, m.l("РФ — напрямую, остальное — через отмеченные ноды.", "Russia direct; other traffic through selected nodes."), m.l("Пробел — отметить · Enter — применить", "Space — select · Enter — apply"))
+		for _, node := range m.routes.Inventory.Nodes {
+			mark := "[ ] "
+			if m.routes.Selection[node.UUID] {
+				mark = "[✓] "
+			}
+			label := mark + node.Name + " · " + node.Address
+			if node.IsDisabled {
+				label += m.l(" · отключена", " · disabled")
+			}
+			list = append(list, label)
 		}
 	case "routeEditor":
 		rows = append(rows, m.l("Отдельный шаблон подписки; подключения подставляет панель.", "A separate subscription template; the panel injects connection details."))
@@ -606,9 +682,13 @@ func (m Model) routingView() string {
 			list = []string{m.l("Продолжить / проверить", "Resume / check"), m.l("Удалить управляемый шаблон", "Delete managed template")}
 		}
 	case "routeResult":
-		rows = append(rows, m.routes.Text, "", m.l("Enter — список схем · Esc — назад", "Enter — schemes · Esc — back"))
+		hint := m.l("Enter — список схем · Esc — в меню", "Enter — schemes · Esc — menu")
+		if m.routes.Quick {
+			hint = m.l("Enter / Esc — в меню", "Enter / Esc — menu")
+		}
+		rows = append(rows, m.routes.Text, "", hint)
 	}
-	if len(list) == 0 && (m.screen == "routeTemplates" || m.screen == "routeList" || m.screen == "routeHosts") {
+	if len(list) == 0 && (m.screen == "routeTemplates" || m.screen == "routeList" || m.screen == "routeHosts" || m.screen == "routeQuickNodes") {
 		rows = append(rows, m.l("Список пуст.", "The list is empty."))
 	}
 	for i, line := range list {

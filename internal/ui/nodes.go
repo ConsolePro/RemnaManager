@@ -65,6 +65,9 @@ func (m Model) startNodeRequest(request services.NodeRequest) (tea.Model, tea.Cm
 		if request.Action == "node-install-confirm" {
 			timeout = 90 * time.Second
 		}
+		if strings.HasPrefix(request.Action, "node-warp-") && strings.HasSuffix(request.Action, "-run") {
+			timeout = 15 * time.Minute
+		}
 		operation, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		result, err := service.ManageNodes(operation, request)
@@ -86,6 +89,9 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if msg.err != nil {
+		if strings.HasPrefix(msg.action, "node-warp-") && strings.HasSuffix(msg.action, "-authenticated") {
+			msg.err = services.LocalizedError("Не удалось войти на ноду по SSH. Повторите операцию и проверьте пароль root.", "Could not authenticate to the node over SSH; retry and check the root password.")
+		}
 		if msg.action == "node-install-details" {
 			m.problem = m.errorText(msg.err)
 			m.prepareNodeDetails()
@@ -123,7 +129,7 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 	if len(msg.result.Command) > 0 {
 		cmd := exec.CommandContext(m.ctx, msg.result.Command[0], msg.result.Command[1:]...)
 		run := m.run
-		if msg.action == "node-install-auth" || msg.action == "node-update-auth" || msg.action == "node-reinstall-auth" || msg.action == "node-site-auth" || msg.action == "node-ssh-auth" || msg.action == "node-core-auth" || msg.action == "node-core-rollback-auth" {
+		if msg.action == "node-install-auth" || msg.action == "node-update-auth" || msg.action == "node-reinstall-auth" || msg.action == "node-site-auth" || msg.action == "node-ssh-auth" || msg.action == "node-core-auth" || msg.action == "node-core-rollback-auth" || msg.action == "node-warp-install-auth" || msg.action == "node-warp-remove-auth" {
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 				action := strings.TrimSuffix(msg.action, "-auth") + "-authenticated"
 				return nodeResultMsg{run, action, services.NodeResult{Install: msg.result.Install}, err}
@@ -175,6 +181,15 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 		return m.startNodeRequest(services.NodeRequest{Action: "node-ssh-open", UUID: m.nodeTarget.UUID})
 	case "node-core-auth", "node-core-authenticated", "node-core-rollback-auth", "node-core-rollback-authenticated":
 		return m.startNodeRequest(services.NodeRequest{Action: m.nodeAction + "-run", UUID: m.nodeTarget.UUID, Value: m.nodeRequest.Value})
+	case "node-warp-install-auth", "node-warp-install-authenticated", "node-warp-remove-auth", "node-warp-remove-authenticated":
+		return m.startNodeRequest(services.NodeRequest{Action: m.nodeAction + "-run", UUID: m.nodeTarget.UUID})
+	case "node-warp-install-prepare", "node-warp-remove-prepare":
+		m.panelResult = msg.result.Text
+		if m.cfg.Language != "en" {
+			m.panelResult = msg.result.TextRU
+		}
+		m.nodeRequest = services.NodeRequest{Action: m.nodeAction + "-auth", UUID: m.nodeTarget.UUID}
+		m.screen = "nodesConfirm"
 	case "node-site-auth", "node-site-authenticated":
 		return m.startNodeRequest(services.NodeRequest{Action: "node-site-run", UUID: m.nodeTarget.UUID, Value: m.nodeRequest.Value})
 	case "node-update-auth", "node-reinstall-auth", "node-update-authenticated", "node-reinstall-authenticated":
@@ -517,6 +532,8 @@ func (m Model) nodesView() string {
 	case "nodesConfirm":
 		text := title + "\n\n" + m.nodeTarget.Name + " · " + m.nodeTarget.Address + "\nUUID: " + m.nodeTarget.UUID + "\n\n"
 		switch m.nodeAction {
+		case "node-warp-install", "node-warp-remove":
+			text += m.panelResult
 		case "node-delete":
 			text += warning.Render(m.l("Удалить выбранную ноду из панели?\nКонтейнер на сервере продолжит работать. Профили, хосты и сквады сохраняются.", "Delete the selected node from the panel?\nThe remote container will remain running. Profiles, hosts and squads are retained."))
 		case "node-core", "node-core-rollback":

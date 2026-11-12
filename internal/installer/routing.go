@@ -210,10 +210,13 @@ func (r *Real) manageRouting(ctx context.Context, request services.RoutingReques
 	if err := r.prepareManagement(ctx); err != nil {
 		return result, err
 	}
-	if request.Action != "route-inventory" && request.Action != "route-list" {
+	if request.Action != "route-inventory" && request.Action != "route-list" && request.Action != "route-quick-inventory" {
 		if err := nodeReadinessError(r.state); err != nil {
 			return result, err
 		}
+	}
+	if strings.HasPrefix(request.Action, "route-quick-") {
+		return r.manageQuickRouting(ctx, request)
 	}
 	switch request.Action {
 	case "route-inventory":

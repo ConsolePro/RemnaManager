@@ -48,6 +48,9 @@ type PanelManager interface {
 }
 
 type Node struct {
+	ConfigProfile *struct {
+		UUID string `json:"activeConfigProfileUuid"`
+	} `json:"configProfile"`
 	UUID        string `json:"uuid"`
 	Name        string `json:"name"`
 	Address     string `json:"address"`

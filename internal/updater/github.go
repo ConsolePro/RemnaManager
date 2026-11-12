@@ -36,7 +36,7 @@ type Catalog struct {
 
 // List returns recent stable releases from the same trusted repository as Get.
 func (c Catalog) List(ctx context.Context) ([]Release, error) {
-	if c.Repo != "ConsolePro/RemnaManager" && c.Repo != "XTLS/Xray-core" {
+	if c.Repo != "ConsolePro/RemnaManager" && c.Repo != "XTLS/Xray-core" && c.Repo != "ViRb3/wgcf" {
 		return nil, errors.New("unsupported release repository")
 	}
 	data, err := c.Read(ctx, "https://api.github.com/repos/"+c.Repo+"/releases?per_page=100", 16<<20)
@@ -60,7 +60,7 @@ func (c Catalog) List(ctx context.Context) ([]Release, error) {
 }
 
 func (c Catalog) Get(ctx context.Context, tag string) (Release, error) {
-	if c.Repo != "ConsolePro/RemnaManager" && c.Repo != "XTLS/Xray-core" {
+	if c.Repo != "ConsolePro/RemnaManager" && c.Repo != "XTLS/Xray-core" && c.Repo != "ViRb3/wgcf" {
 		return Release{}, errors.New("unsupported release repository")
 	}
 	path := "latest"

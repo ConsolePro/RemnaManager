@@ -530,7 +530,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.screen = "notice"
 				}
 			}
-		case "routeTemplates", "routeEditor", "routePools", "routeHosts", "routeRules", "routeTargets", "routeExits", "routeNameInput", "routePoolInput", "routeRuleInput", "routeExitInput", "routeConfirm", "routeList", "routeDetails", "routeResult":
+		case "routeTemplates", "routeQuickNodes", "routeEditor", "routePools", "routeHosts", "routeRules", "routeTargets", "routeExits", "routeNameInput", "routePoolInput", "routeRuleInput", "routeExitInput", "routeConfirm", "routeList", "routeDetails", "routeResult":
 			return m.updateRouting(msg)
 		case "nodeConnectInput", "nodeDetailsInput", "nodeCountry", "nodeSite", "nodeInstallInput", "nodeInstallConfirm", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult", "nodeInstallPanelIP":
 			return m.updateNodeInstallScreen(msg)

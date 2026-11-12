@@ -32,6 +32,9 @@ func (r *Real) ManageNodes(ctx context.Context, request services.NodeRequest) (s
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	result, err := r.manageNodes(ctx, request)
+	if err != nil && strings.HasPrefix(request.Action, "node-warp-") && services.ErrorText(err, "ru") == err.Error() {
+		err = services.WrapLocalized(err, "Не удалось настроить WARP. Проверьте доступ ноды по SSH и журнал /opt/remnanode/warp/install.log. Настройку можно повторить.", err.Error())
+	}
 	if err != nil && strings.HasPrefix(request.Action, "node-core-") && services.ErrorText(err, "ru") == err.Error() {
 		err = services.WrapLocalized(err, "Не удалось выполнить операцию с ядром Xray. Проверьте подключение ноды и журнал менеджера: "+r.LogPath, err.Error())
 	}
@@ -107,6 +110,9 @@ func (r *Real) manageNodes(ctx context.Context, request services.NodeRequest) (s
 		return result, errors.New("unexpected node detail response")
 	}
 	request.UUID = node.UUID
+	if strings.HasPrefix(request.Action, "node-warp-") {
+		return r.manageNodeWarp(ctx, request, node)
+	}
 	node.Name = r.safeOutput([]byte(node.Name))
 	node.Address = r.safeOutput([]byte(node.Address))
 	node.XrayVersion = r.safeOutput([]byte(node.XrayVersion))

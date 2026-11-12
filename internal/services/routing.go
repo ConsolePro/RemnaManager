@@ -42,6 +42,10 @@ type RoutingHost struct {
 	Hidden       bool     `json:"isHidden"`
 	TemplateUUID string   `json:"xrayJsonTemplateUuid"`
 	Nodes        []string `json:"nodes"`
+	Inbound      struct {
+		Profile string `json:"configProfileUuid"`
+		UUID    string `json:"configProfileInboundUuid"`
+	} `json:"inbound"`
 }
 type RoutingTemplate struct {
 	UUID   string          `json:"uuid"`
@@ -56,8 +60,10 @@ type RoutingScheme struct {
 type RoutingRequest struct {
 	Action, ID string
 	Spec       RoutingSpec
+	Nodes      []string
 }
 type RoutingResult struct {
+	Nodes        []Node
 	Hosts        []RoutingHost
 	Templates    []RoutingTemplate
 	Schemes      []RoutingScheme

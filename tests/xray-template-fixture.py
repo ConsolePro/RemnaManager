@@ -49,7 +49,7 @@ def main():
             raise RuntimeError("Xray release is not an ELF executable")
         binary.chmod(0o700)
         environment = dict(os.environ, XRAY_TEST_BINARY=str(binary), XRAY_LOCATION_ASSET=directory)
-        subprocess.run(["go", "test", "./internal/routing", "-run", "^TestGeneratedTemplatesWithXray$", "-count=1", "-v"], env=environment, check=True, timeout=180)
+        subprocess.run(["go", "test", "./internal/routing", "./internal/installer", "-run", "^(TestGeneratedTemplatesWithXray|TestNativeWarpProfileWithXray)$", "-count=1", "-v"], env=environment, check=True, timeout=180)
 
 
 if __name__ == "__main__":

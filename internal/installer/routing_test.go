@@ -15,6 +15,7 @@ import (
 const routeBaseID = "11111111-2222-4333-8444-555555555555"
 const routeNewID = "21111111-2222-4333-8444-555555555555"
 const routeHostID = "31111111-2222-4333-8444-555555555555"
+const routeNodeID = "41111111-2222-4333-8444-555555555555"
 const routeTestConfig = `{"inbounds":[{"tag":"socks","listen":"127.0.0.1","port":10808,"protocol":"socks"}],"outbounds":[{"tag":"direct","protocol":"freedom"}],"routing":{"rules":[]}}`
 
 type routingAPIFake struct {
@@ -22,6 +23,7 @@ type routingAPIFake struct {
 	creates, patches, deletes                           int
 	name                                                string
 	config                                              json.RawMessage
+	baseConfig                                          json.RawMessage
 	writes                                              []string
 }
 
@@ -36,8 +38,10 @@ func routingFixture(t *testing.T) (*Real, *routingAPIFake) {
 		}
 		var response any
 		switch {
+		case req.Method == "GET" && path == "/nodes":
+			response = map[string]any{"nodes": []services.Node{{UUID: routeNodeID, Name: "FN1501", Address: "192.0.2.10"}}}
 		case req.Method == "GET" && path == "/hosts":
-			values := []services.RoutingHost{{UUID: routeHostID, Remark: "FN1501", Address: "192.0.2.10"}}
+			values := []services.RoutingHost{{UUID: routeHostID, Remark: "FN1501", Address: "192.0.2.10", Nodes: []string{routeNodeID}}}
 			if f.assigned {
 				values[0].TemplateUUID = routeNewID
 			}
@@ -49,7 +53,11 @@ func routingFixture(t *testing.T) (*Real, *routingAPIFake) {
 			}
 			response = map[string]any{"templates": values, "total": len(values)}
 		case req.Method == "GET" && path == "/subscription-templates/"+routeBaseID:
-			response = services.RoutingTemplate{UUID: routeBaseID, Name: "Default", Type: "XRAY_JSON", Config: json.RawMessage(routeTestConfig)}
+			config := f.baseConfig
+			if config == nil {
+				config = json.RawMessage(routeTestConfig)
+			}
+			response = services.RoutingTemplate{UUID: routeBaseID, Name: "Default", Type: "XRAY_JSON", Config: config}
 		case req.Method == "POST" && path == "/subscription-templates":
 			var body map[string]string
 			_ = json.NewDecoder(req.Body).Decode(&body)
@@ -68,10 +76,14 @@ func routingFixture(t *testing.T) (*Real, *routingAPIFake) {
 				Config json.RawMessage `json:"templateJson"`
 			}
 			_ = json.NewDecoder(req.Body).Decode(&body)
-			if body.UUID != routeNewID {
+			if body.UUID != routeNewID && body.UUID != routeBaseID {
 				t.Fatal("base/default template was modified")
 			}
-			f.config = body.Config
+			if body.UUID == routeBaseID {
+				f.baseConfig = body.Config
+			} else {
+				f.config = body.Config
+			}
 			f.patches++
 			if f.losePatch {
 				f.losePatch = false

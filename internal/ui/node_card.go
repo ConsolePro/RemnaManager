@@ -100,6 +100,8 @@ func (m Model) beginNodeAction(selected item) (tea.Model, tea.Cmd) {
 		return m.startNodeRequest(services.NodeRequest{Action: "node-ssh-auth", UUID: m.nodeTarget.UUID})
 	case "node-core-check":
 		return m.startNodeRequest(m.nodeRequest)
+	case "node-warp-install", "node-warp-remove":
+		return m.startNodeRequest(services.NodeRequest{Action: m.nodeAction + "-prepare", UUID: m.nodeTarget.UUID})
 	case "node-core", "node-core-rollback", "node-update", "node-reinstall":
 		return m.startNodeRequest(services.NodeRequest{Action: m.nodeAction + "-prepare", UUID: m.nodeTarget.UUID})
 	case "nodes-list", "node-status":

@@ -29,6 +29,7 @@ import (
 var nodeAgent []byte
 
 type NodeJob struct {
+	WarpEnabled                                              bool
 	CoreVersion, CoreBinary, CoreUpdateID, CoreTargetVersion string
 	Version                                                  int
 	LayoutVersion                                            int
@@ -629,6 +630,9 @@ func RenderNodeStack(j NodeJob) ([]byte, error) {
 		image = "remnawave/node:latest"
 	}
 	node := map[string]any{"image": image, "restart": "unless-stopped", "network_mode": "host", "environment": map[string]string{"NODE_PORT": strconv.Itoa(nodeAPIPort(j.Params)), "SECRET_KEY": j.Secret}, "logging": map[string]any{"driver": "json-file", "options": map[string]string{"max-size": "10m", "max-file": "3"}}}
+	if j.WarpEnabled {
+		node["cap_add"] = []string{"NET_ADMIN", "NET_RAW"}
+	}
 	if j.CoreBinary != "" {
 		if !corePathPattern.MatchString(j.CoreBinary) {
 			return nil, errors.New("invalid Xray path")
