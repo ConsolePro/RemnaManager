@@ -32,3 +32,4 @@ test "$before" = "$(sha256sum /etc/remnamanager/config.json)"
 re --version
 if bash "$source_dir/install.sh" --ref '..'; then echo 'Invalid ref accepted' >&2; exit 1; fi
 python3 "$source_dir/tests/terminal-smoke.py"
+python3 "$source_dir/tests/manager-remove-fixture.py"

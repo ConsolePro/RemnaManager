@@ -61,6 +61,8 @@ type Model struct {
 	managerUpdater                                     managerUpdates
 	managerPlan                                        updater.Plan
 	managerApplied, restartRequested                   bool
+	managerRemovalPlan                                 services.ManagerRemovalPlan
+	managerRemovalRequested                            bool
 	ctx                                                context.Context
 	store                                              config.Store
 	cfg, draft                                         config.Config
@@ -198,7 +200,7 @@ func (m *Model) back() {
 	m.problem = ""
 	m.scroll = 0
 	switch m.screen {
-	case "managerInput", "managerConfirm", "managerProgress", "managerResult":
+	case "managerInput", "managerConfirm", "managerProgress", "managerResult", "managerRemoveConfirm", "managerRemoveProgress", "managerRemoveResult":
 		m.cancelInstall()
 		m.run++
 		m.screen = "menu"
@@ -337,6 +339,8 @@ func (m *Model) back() {
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case managerRemovalMsg:
+		return m.receiveManagerRemoval(msg)
 	case managerUpdateMsg:
 		return m.receiveManagerUpdate(msg)
 	case nodeResultMsg:
@@ -518,6 +522,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "nodeConnectInput", "nodeDetailsInput", "nodeCountry", "nodeSite", "nodeInstallInput", "nodeInstallConfirm", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult", "nodeInstallPanelIP":
 			return m.updateNodeInstallScreen(msg)
+		case "managerRemoveConfirm", "managerRemoveResult":
+			return m.updateManagerRemoval(msg)
 		case "managerInput", "managerConfirm", "managerResult":
 			return m.updateManagerScreen(msg)
 		case "nodesList", "nodesCard", "nodesInput", "nodesTrust", "nodesConfirm", "nodesResult", "nodesCoreVersions":

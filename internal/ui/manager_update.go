@@ -23,6 +23,9 @@ type managerUpdateMsg struct {
 }
 
 func (m Model) openManagerUpdate(action string) (tea.Model, tea.Cmd) {
+	if action == "manager-remove" {
+		return m.openManagerRemoval()
+	}
 	if m.managerUpdater == nil {
 		if !m.liveInstall() {
 			m.screen = "notice"

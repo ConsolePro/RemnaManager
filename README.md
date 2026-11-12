@@ -42,7 +42,7 @@ sudo re
 <summary>Установка конкретной версии</summary>
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ConsolePro/RemnaManager/main/install.sh | sudo bash -s -- --version v1.3.0
+curl -fsSL https://raw.githubusercontent.com/ConsolePro/RemnaManager/main/install.sh | sudo bash -s -- --version v1.3.1
 ```
 
 Версии и готовые бинарники: [GitHub Releases](https://github.com/ConsolePro/RemnaManager/releases).
@@ -97,6 +97,7 @@ WARP-Native, Xray Checker и Telegram-мониторинг, BBR, баланси�
 - [Обновление контейнера](doc/node-update.md) и [переустановка ноды](doc/node-reinstall.md).
 - [Обновление Xray](doc/node-core-update.md), [файлы ноды и смена сайта](doc/node-files-and-templates.md).
 - [Обновление менеджера и откат](doc/manager-update.md).
+- [Удаление менеджера с сохранением панели и нод](doc/manager-removal.md).
 
 Настройки менеджера: `/etc/remnamanager/config.json`. Данные Go-установки панели и журналы операций: `/var/lib/remnamanager`. Состояние старой Bash-версии автоматически не импортируется.
 

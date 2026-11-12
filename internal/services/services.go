@@ -141,3 +141,13 @@ type NodeResult struct {
 type NodeManager interface {
 	ManageNodes(context.Context, NodeRequest) (NodeResult, error)
 }
+
+type ManagerRemovalPlan struct {
+	Remove, Preserve []string
+	Signature        string
+}
+
+type ManagerRemover interface {
+	PrepareManagerRemoval(context.Context) (ManagerRemovalPlan, error)
+	RemoveManager(context.Context, ManagerRemovalPlan) error
+}

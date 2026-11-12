@@ -4,9 +4,25 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestClosedCacheCannotRecreateConfigurationAfterRemoval(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"tag_name":"v1.3.1"}`)) }))
+	defer server.Close()
+	control := &CacheControl{}
+	checker := Checker{URL: server.URL, Client: server.Client(), Cache: filepath.Join(t.TempDir(), "removed-config", "update-cache.json"), CacheControl: control}
+	copyOfChecker := checker
+	control.Close()
+	if _, err := copyOfChecker.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Dir(checker.Cache)); !os.IsNotExist(err) {
+		t.Fatal("background check recreated removed configuration", err)
+	}
+}
 
 func TestCheckCacheAndOffline(t *testing.T) {
 	calls := 0

@@ -10,10 +10,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-var Version = "v1.3.0"
+var Version = "v1.3.1"
 
 const Endpoint = "https://api.github.com/repos/ConsolePro/RemnaManager/releases/latest"
 
@@ -25,9 +26,19 @@ type Result struct {
 }
 
 type Checker struct {
-	Client     *http.Client
-	URL, Cache string
+	Client       *http.Client
+	URL, Cache   string
+	CacheControl *CacheControl
 }
+
+// CacheControl prevents in-flight startup checks from recreating configuration
+// after the application exits for self-removal. Close waits for active writes.
+type CacheControl struct {
+	mu     sync.Mutex
+	closed bool
+}
+
+func (c *CacheControl) Close() { c.mu.Lock(); defer c.mu.Unlock(); c.closed = true }
 
 func (c Checker) Check(ctx context.Context) (Result, error) {
 	var r Result
@@ -65,6 +76,13 @@ func (c Checker) Check(ctx context.Context) (Result, error) {
 		r.Version = ""
 	}
 	r.Checked = time.Now()
+	if c.CacheControl != nil {
+		c.CacheControl.mu.Lock()
+		defer c.CacheControl.mu.Unlock()
+		if c.CacheControl.closed {
+			return r, nil
+		}
+	}
 	if c.Cache != "" {
 		// Cache failures never prevent starting the application.
 		if os.MkdirAll(filepath.Dir(c.Cache), 0700) == nil {

@@ -24,6 +24,6 @@ func menu() []item {
 		group("Плагины", "Plugins", leaf("Включить BBR + fq", "Enable BBR + fq"), leaf("Диагностика и логи", "Diagnostics and logs")),
 		group("Балансировщики и мосты", "Balancers and bridges", leaf("Клиентский балансировщик", "Client balancer"), leaf("Мост РФ → Европа", "Russia → Europe bridge"), leaf("Список / удаление", "List / remove"), leaf("Незавершённые операции", "Pending operations")),
 		group("Версии и обновления", "Versions and updates", item{ru: "Проверить обновления", en: "Check for updates", action: "check"}, operation("Обновить менеджер", "Update manager", "manager-update"), operation("Выбрать версию", "Select version", "manager-select"), operation("Откатить версию", "Roll back", "manager-rollback")),
-		group("Настройки", "Settings", item{ru: "Язык и email администратора", en: "Language and administrator email", action: "settings"}),
+		group("Настройки", "Settings", item{ru: "Язык и email администратора", en: "Language and administrator email", action: "settings"}, operation("Удалить менеджер с сервера", "Remove manager from server", "manager-remove")),
 	}
 }

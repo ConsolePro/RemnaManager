@@ -15,6 +15,8 @@ var failure = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 
 func (m Model) body() string {
 	switch m.screen {
+	case "managerRemoveConfirm", "managerRemoveProgress", "managerRemoveResult":
+		return m.managerRemovalView()
 	case "managerInput", "managerConfirm", "managerProgress", "managerResult":
 		return m.managerUpdateView()
 	case "nodeConnectInput", "nodeDetailsInput", "nodeCountry", "nodeSite", "nodeInstallInput", "nodeInstallConfirm", "nodeInstallProgress", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult", "nodeInstallPanelIP":
@@ -164,7 +166,7 @@ func (m Model) viewportBody() string {
 	if m.problem != "" {
 		body += "\n\n" + failure.Render(m.problem)
 	}
-	if strings.HasPrefix(m.screen, "panel") && m.screen != "panelInput" || strings.HasPrefix(m.screen, "node") && m.screen != "nodesList" && m.screen != "nodesInput" && m.screen != "nodeInstallInput" && m.screen != "nodeConnectInput" && m.screen != "nodeDetailsInput" && m.screen != "nodeInstallPending" {
+	if strings.HasPrefix(m.screen, "managerRemove") || strings.HasPrefix(m.screen, "panel") && m.screen != "panelInput" || strings.HasPrefix(m.screen, "node") && m.screen != "nodesList" && m.screen != "nodesInput" && m.screen != "nodeInstallInput" && m.screen != "nodeConnectInput" && m.screen != "nodeDetailsInput" && m.screen != "nodeInstallPending" {
 		body = ansi.Hardwrap(body, max(1, m.width-6), true)
 	}
 	return body
@@ -278,6 +280,12 @@ func (m Model) View() string {
 		hint = m.l("PgUp/PgDn журнал · Enter в меню · Esc назад · F1 выход", "PgUp/PgDn log · Enter menu · Esc back · F1 exit")
 	}
 	switch m.screen {
+	case "managerRemoveConfirm":
+		hint = m.l("PgUp/PgDn — список · Enter — удалить · Esc — отменить", "PgUp/PgDn — list · Enter — remove · Esc — cancel")
+	case "managerRemoveProgress":
+		hint = m.l("Esc — отменить проверку", "Esc — cancel check")
+	case "managerRemoveResult":
+		hint = m.l("Enter / Esc — в меню", "Enter / Esc — menu")
 	case "nodesCoreVersions":
 		hint = m.l("↑↓ — версия · Enter — выбрать · Esc — назад", "↑↓ — version · Enter — select · Esc — back")
 	case "nodesCard":
