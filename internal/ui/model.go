@@ -58,6 +58,7 @@ type frame struct {
 }
 
 type Model struct {
+	routes                                             routingUI
 	managerUpdater                                     managerUpdates
 	managerPlan                                        updater.Plan
 	managerApplied, restartRequested                   bool
@@ -168,6 +169,10 @@ func (m *Model) startSettings(editing bool) {
 	m.problem = ""
 }
 func (m *Model) back() {
+	if strings.HasPrefix(m.screen, "route") {
+		m.backRouting()
+		return
+	}
 	if m.nodeBrowser && strings.HasPrefix(m.screen, "nodes") {
 		m.cancelInstall()
 		m.run++
@@ -339,6 +344,8 @@ func (m *Model) back() {
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case routingMsg:
+		return m.receiveRouting(msg)
 	case managerRemovalMsg:
 		return m.receiveManagerRemoval(msg)
 	case managerUpdateMsg:
@@ -507,6 +514,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.updateStatus = m.l("Проверка…", "Checking…")
 					return m, m.check()
 				default:
+					if strings.HasPrefix(selected.action, "route-") {
+						return m.openRouting(selected.action)
+					}
 					if strings.HasPrefix(selected.action, "manager-") {
 						return m.openManagerUpdate(selected.action)
 					}
@@ -520,6 +530,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.screen = "notice"
 				}
 			}
+		case "routeTemplates", "routeEditor", "routePools", "routeHosts", "routeRules", "routeTargets", "routeExits", "routeNameInput", "routePoolInput", "routeRuleInput", "routeExitInput", "routeConfirm", "routeList", "routeDetails", "routeResult":
+			return m.updateRouting(msg)
 		case "nodeConnectInput", "nodeDetailsInput", "nodeCountry", "nodeSite", "nodeInstallInput", "nodeInstallConfirm", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult", "nodeInstallPanelIP":
 			return m.updateNodeInstallScreen(msg)
 		case "managerRemoveConfirm", "managerRemoveResult":
@@ -637,7 +649,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	if m.screen == "email" || m.screen == "domains" || m.screen == "panelInput" || m.screen == "nodesInput" || m.screen == "nodesTrust" || m.screen == "nodeInstallInput" || m.screen == "nodeInstallPanelIP" || m.screen == "nodeConnectInput" || m.screen == "nodeDetailsInput" || m.screen == "nodeCountry" || m.screen == "managerInput" {
+	if m.screen == "email" || m.screen == "domains" || m.screen == "panelInput" || m.screen == "nodesInput" || m.screen == "nodesTrust" || m.screen == "nodeInstallInput" || m.screen == "nodeInstallPanelIP" || m.screen == "nodeConnectInput" || m.screen == "nodeDetailsInput" || m.screen == "nodeCountry" || m.screen == "managerInput" || strings.HasPrefix(m.screen, "route") && strings.HasSuffix(m.screen, "Input") {
 		var cmd tea.Cmd
 		m.inputs[m.focus], cmd = m.inputs[m.focus].Update(msg)
 		return m, cmd

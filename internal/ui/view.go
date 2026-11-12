@@ -14,6 +14,9 @@ var warning = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 var failure = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 
 func (m Model) body() string {
+	if strings.HasPrefix(m.screen, "route") {
+		return m.routingView()
+	}
 	switch m.screen {
 	case "managerRemoveConfirm", "managerRemoveProgress", "managerRemoveResult":
 		return m.managerRemovalView()
@@ -166,7 +169,7 @@ func (m Model) viewportBody() string {
 	if m.problem != "" {
 		body += "\n\n" + failure.Render(m.problem)
 	}
-	if strings.HasPrefix(m.screen, "managerRemove") || strings.HasPrefix(m.screen, "panel") && m.screen != "panelInput" || strings.HasPrefix(m.screen, "node") && m.screen != "nodesList" && m.screen != "nodesInput" && m.screen != "nodeInstallInput" && m.screen != "nodeConnectInput" && m.screen != "nodeDetailsInput" && m.screen != "nodeInstallPending" {
+	if strings.HasPrefix(m.screen, "route") || strings.HasPrefix(m.screen, "managerRemove") || strings.HasPrefix(m.screen, "panel") && m.screen != "panelInput" || strings.HasPrefix(m.screen, "node") && m.screen != "nodesList" && m.screen != "nodesInput" && m.screen != "nodeInstallInput" && m.screen != "nodeConnectInput" && m.screen != "nodeDetailsInput" && m.screen != "nodeInstallPending" {
 		body = ansi.Hardwrap(body, max(1, m.width-6), true)
 	}
 	return body
@@ -179,6 +182,9 @@ func (m Model) View() string {
 	width := m.width - 6
 	header := m.serverHeader(time.Now())
 	top := header + "\n\n" + m.classicStatsView()
+	if strings.HasPrefix(m.screen, "route") {
+		top = header
+	}
 	if m.nodeBrowser && strings.HasPrefix(m.screen, "nodes") {
 		top = header
 	}
@@ -204,7 +210,9 @@ func (m Model) View() string {
 	if m.screen != "menu" {
 		vp.SetYOffset(m.scroll)
 	}
-	if m.screen == "menu" {
+	if strings.HasPrefix(m.screen, "route") && m.problem != "" {
+		vp.GotoBottom()
+	} else if m.screen == "menu" {
 		cursor := m.frames[len(m.frames)-1].cursor + 2
 		if cursor >= vp.YOffset+vp.Height {
 			vp.SetYOffset(cursor - vp.Height + 1)
@@ -219,11 +227,14 @@ func (m Model) View() string {
 		} else if cursor < vp.YOffset {
 			vp.SetYOffset(cursor)
 		}
-	} else if m.screen == "nodesCoreVersions" || m.screen == "nodesCard" {
+	} else if m.screen == "nodesCoreVersions" || m.screen == "nodesCard" || strings.HasPrefix(m.screen, "route") && (m.routeItemCount() > 0 || strings.HasSuffix(m.screen, "Input")) {
 		cursor := 0
 		for i, line := range lines {
 			if strings.HasPrefix(ansi.Strip(line), "› ") {
 				cursor = i
+				if strings.HasSuffix(m.screen, "Input") {
+					cursor++ // Keep both the selected label and its input visible.
+				}
 				break
 			}
 		}
@@ -275,6 +286,9 @@ func (m Model) View() string {
 	hint := m.l("↑↓ выбор · ←→ раздел · Enter · Esc назад · F1 выход", "↑↓ select · ←→ section · Enter · Esc back · F1 exit")
 	if m.screen != "menu" {
 		hint = m.l("Tab / Shift+Tab поле · Enter далее · Esc назад · F1 выход", "Tab / Shift+Tab field · Enter next · Esc back · F1 exit")
+	}
+	if strings.HasPrefix(m.screen, "route") {
+		hint = m.l("↑↓ / Tab — выбор · Enter — далее · Esc — назад", "↑↓ / Tab — select · Enter — continue · Esc — back")
 	}
 	if m.screen == "progress" {
 		hint = m.l("PgUp/PgDn журнал · Enter в меню · Esc назад · F1 выход", "PgUp/PgDn log · Enter menu · Esc back · F1 exit")
