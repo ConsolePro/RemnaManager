@@ -193,7 +193,7 @@ func removeNativeWarpConfig(current json.RawMessage, j nodeWarpJob) (json.RawMes
 func mustJSON(value any) json.RawMessage { data, _ := json.Marshal(value); return data }
 
 func (r *Real) runNodeWarpAgent(ctx context.Context, j NodeJob, action string, assets map[string]coreAsset, config json.RawMessage) error {
-	if action != "install" && action != "remove" && action != "validate" && action != "checkpoint" {
+	if action != "install" && action != "remove" && action != "validate" && action != "checkpoint" && action != "running" {
 		return services.LocalizedError("Неверная операция WARP.", "Invalid WARP action.")
 	}
 	args, err := r.provisionSSHArgs(j, true)
@@ -254,6 +254,20 @@ func (r *Real) manageNodeWarp(ctx context.Context, req services.NodeRequest, nod
 	if loadErr != nil && !os.IsNotExist(loadErr) {
 		return result, loadErr
 	}
+	resumingRemoval := loadErr == nil && w.Phase == "removing"
+	if install && loadErr == nil && w.Phase == "removing" {
+		if strings.HasSuffix(req.Action, "-prepare") {
+			result.TextRU = "Менеджер сначала завершит прерванное удаление WARP, затем выполнит новую установку на этой ноде. Аккаунт и резервные копии сохраняются. При новой регистрации принимаются условия Cloudflare WARP (https://www.cloudflare.com/application/terms/)."
+			result.Text = "The manager will finish interrupted WARP removal, then install WARP again on this node. Account and backups are retained. New registration accepts Cloudflare WARP terms (https://www.cloudflare.com/application/terms/)."
+			return result, nil
+		}
+		if strings.HasSuffix(req.Action, "-run") {
+			if _, err := r.manageNodeWarp(ctx, services.NodeRequest{Action: "node-warp-remove-run", UUID: node.UUID}, node); err != nil {
+				return result, err
+			}
+			return r.manageNodeWarp(ctx, req, node)
+		}
+	}
 	if install {
 		nodes, err := r.quickNodes(ctx)
 		if err != nil {
@@ -270,9 +284,6 @@ func (r *Real) manageNodeWarp(ctx context.Context, req services.NodeRequest, nod
 				return result, err
 			}
 			w = nodeWarpJob{NodeUUID: node.UUID, ProfileUUID: j.ProfileUUID, Phase: "prepared", Before: current, After: after}
-		}
-		if w.Phase == "removing" {
-			return result, services.LocalizedError("Сначала завершите удаление WARP.", "Complete WARP removal first.")
 		}
 		if w.ProfileUUID != j.ProfileUUID || (jsonHash(current) != jsonHash(w.Before) && jsonHash(current) != jsonHash(w.After)) {
 			return result, services.LocalizedError("Профиль изменён вручную после подготовки WARP. Автоматическая перезапись запрещена.", "Profile was edited after WARP preparation; overwrite refused.")
@@ -385,6 +396,9 @@ func (r *Real) manageNodeWarp(ctx context.Context, req services.NodeRequest, nod
 			return result, err
 		}
 		if jsonHash(current) != jsonHash(w.Removal) {
+			if err := r.runNodeWarpAgent(ctx, j, "validate", nil, w.Removal); err != nil {
+				return result, err
+			}
 			if _, err := r.nodeAPI(ctx, "PATCH", "/config-profiles", map[string]any{"uuid": j.ProfileUUID, "config": w.Removal}); err != nil {
 				return result, err
 			}
@@ -396,16 +410,19 @@ func (r *Real) manageNodeWarp(ctx context.Context, req services.NodeRequest, nod
 		if jsonHash(confirmed) != jsonHash(w.Removal) {
 			return result, services.LocalizedError("Исходный профиль не подтверждён. Интерфейс WARP сохранён; повторите удаление.", "Original profile not confirmed. WARP interface retained; retry removal.")
 		}
-		if err := r.restartWarpNode(ctx, j); err != nil {
-			return result, err
-		}
-		if err := r.waitNodeWarp(ctx, j); err != nil {
-			return result, err
+		if jsonHash(w.RemoveFrom) != jsonHash(w.Removal) || jsonRefersTo(w.Removal, nativeWarpTag, "rmwarp") {
+			// Reuse an already confirmed restart after a lost response or slow
+			// startup instead of restarting the core on every recovery attempt.
+			if !resumingRemoval || r.runNodeWarpAgent(ctx, j, "validate", nil, nil) != nil {
+				if err := r.restartWarpNode(ctx, j); err != nil {
+					return result, err
+				}
+				if err := r.waitNodeWarp(ctx, j); err != nil {
+					return result, err
+				}
+			}
 		}
 		if err := r.runNodeWarpAgent(ctx, j, "remove", nil, nil); err != nil {
-			return result, err
-		}
-		if err := r.waitNodeWarp(ctx, j); err != nil {
 			return result, err
 		}
 		j.WarpEnabled = false
@@ -413,6 +430,14 @@ func (r *Real) manageNodeWarp(ctx context.Context, req services.NodeRequest, nod
 			return result, err
 		}
 		w.Phase = "removed"
+		if err := r.saveWarpJournal(w); err != nil {
+			return result, err
+		}
+		// Removal is complete once the remote agent confirms cleanup. A later
+		// Xray health failure must not leave the component stuck in "removing".
+		if err := r.waitNodeWarp(ctx, j, false); err != nil {
+			return result, services.WrapLocalized(err, "WARP удалён, но работа Xray после очистки не подтверждена. Состояние удаления сохранено; проверьте статус ноды.", "WARP removed, but Xray health after cleanup is unconfirmed. Removal is finalized; inspect node status.")
+		}
 		result.TextRU = "WARP и его маршруты удалены. Остальные настройки Xray сохранены. Аккаунт и копии остались на ноде."
 		result.Text = "WARP and its routes removed; unrelated Xray settings retained. Account and backups remain on the node."
 	}
@@ -427,14 +452,18 @@ func (r *Real) restartWarpNode(ctx context.Context, j NodeJob) error {
 	return err
 }
 
-func (r *Real) waitNodeWarp(ctx context.Context, j NodeJob) error {
+func (r *Real) waitNodeWarp(ctx context.Context, j NodeJob, requireRestart ...bool) error {
+	action := "validate"
+	if len(requireRestart) > 0 && !requireRestart[0] {
+		action = "running"
+	}
 	wait, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	for {
 		raw, err := r.nodeAPI(wait, "GET", "/nodes/"+j.NodeUUID, nil)
 		var node services.Node
 		if err == nil && json.Unmarshal(raw, &node) == nil && node.IsConnected && !node.IsDisabled {
-			if err := r.runNodeWarpAgent(wait, j, "validate", nil, nil); err == nil {
+			if err := r.runNodeWarpAgent(wait, j, action, nil, nil); err == nil {
 				return nil
 			}
 		}

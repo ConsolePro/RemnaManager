@@ -20,6 +20,8 @@ type warpTestState struct {
 	patches, installs, restarts, removes int
 	shared, losePatch, failRemove        bool
 	failStage                            string
+	blockRunning, failPostCleanup        bool
+	cancelProbe                          context.CancelFunc
 }
 
 func warpFixture(t *testing.T) (*Real, NodeJob, services.Node, *warpTestState) {
@@ -91,7 +93,7 @@ func warpFixture(t *testing.T) (*Real, NodeJob, services.Node, *warpTestState) {
 			t.Fatal("secret in SSH arguments")
 		}
 		payload := string(in)
-		for _, action := range []string{"install", "remove", "validate", "checkpoint"} {
+		for _, action := range []string{"install", "remove", "validate", "checkpoint", "running"} {
 			if !strings.Contains(payload, "RM_WARP_ACTION='"+action+"'") {
 				continue
 			}
@@ -103,6 +105,12 @@ func warpFixture(t *testing.T) (*Real, NodeJob, services.Node, *warpTestState) {
 			}
 			if action == "validate" && f.failStage == "validate" {
 				return []byte("RM_WARP_FAILURE=validate\n"), errors.New("config rejected")
+			}
+			if (action == "validate" && strings.Contains(payload, "RM_WARP_CONFIG=''") && f.blockRunning) || (action == "running" && f.failPostCleanup) {
+				if f.cancelProbe != nil {
+					f.cancelProbe()
+				}
+				return nil, errors.New("running core unconfirmed")
 			}
 			if action == "remove" {
 				f.removes++
@@ -190,6 +198,76 @@ func TestNativeWarpCapabilitiesSurviveNodeComposeRegeneration(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "NET_ADMIN") || !strings.Contains(string(data), "NET_RAW") {
 		t.Fatal("node update removed native WARP capabilities")
+	}
+}
+
+func TestWarpInstallFinishesInterruptedRemovalBeforeReinstall(t *testing.T) {
+	r, j, node, f := warpFixture(t)
+	if _, err := r.manageNodeWarp(context.Background(), services.NodeRequest{Action: "node-warp-install-run"}, node); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.blockRunning = true
+	f.cancelProbe = cancel
+	if _, err := r.manageNodeWarp(ctx, services.NodeRequest{Action: "node-warp-remove-run"}, node); err == nil {
+		t.Fatal("unconfirmed restart hidden")
+	}
+	w, err := r.loadWarpJournal(j.NodeUUID)
+	if err != nil || w.Phase != "removing" || f.removes != 0 {
+		t.Fatal("removal was falsely finalized", w.Phase, err)
+	}
+	result, err := r.manageNodeWarp(context.Background(), services.NodeRequest{Action: "node-warp-install-prepare"}, node)
+	if err != nil || !strings.Contains(result.TextRU, "завершит") {
+		t.Fatal("installation remains blocked by recovery", err)
+	}
+	f.blockRunning = false
+	f.cancelProbe = nil
+	if _, err := r.manageNodeWarp(context.Background(), services.NodeRequest{Action: "node-warp-install-run"}, node); err != nil {
+		t.Fatal(err)
+	}
+	w, err = r.loadWarpJournal(j.NodeUUID)
+	if err != nil || w.Phase != "installed" || f.removes != 1 || f.installs != 2 || f.patches != 3 {
+		t.Fatal("recovery duplicated edits or failed to install", w.Phase, f.removes, f.installs, f.patches, err)
+	}
+}
+
+func TestWarpRemovalAfterFailedInstallationNeedsNoCoreRestart(t *testing.T) {
+	r, j, node, f := warpFixture(t)
+	f.failStage = "trace"
+	if _, err := r.manageNodeWarp(context.Background(), services.NodeRequest{Action: "node-warp-install-run"}, node); err == nil {
+		t.Fatal("failed install hidden")
+	}
+	f.failStage = ""
+	if _, err := r.manageNodeWarp(context.Background(), services.NodeRequest{Action: "node-warp-remove-run"}, node); err != nil {
+		t.Fatal(err)
+	}
+	w, err := r.loadWarpJournal(j.NodeUUID)
+	if err != nil || w.Phase != "removed" || f.patches != 0 || f.restarts != 0 || f.removes != 1 {
+		t.Fatal("failed install cleanup restarted unchanged Xray", w.Phase, err)
+	}
+}
+
+func TestWarpCleanupHealthFailureDoesNotLeaveRemovingState(t *testing.T) {
+	r, j, node, f := warpFixture(t)
+	if _, err := r.manageNodeWarp(context.Background(), services.NodeRequest{Action: "node-warp-install-run"}, node); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.failPostCleanup = true
+	f.cancelProbe = cancel
+	if _, err := r.manageNodeWarp(ctx, services.NodeRequest{Action: "node-warp-remove-run"}, node); err == nil {
+		t.Fatal("post-cleanup health failure hidden")
+	}
+	w, err := r.loadWarpJournal(j.NodeUUID)
+	if err != nil || w.Phase != "removed" || f.removes != 1 {
+		t.Fatal("removed component was left pending", w.Phase, err)
+	}
+	f.failPostCleanup = false
+	f.cancelProbe = nil
+	if _, err := r.manageNodeWarp(context.Background(), services.NodeRequest{Action: "node-warp-install-run"}, node); err != nil {
+		t.Fatal("completed removal blocked installation", err)
 	}
 }
 

@@ -109,7 +109,9 @@ elif name=='docker':
             c=json.load(sys.stdin)
             assert any(o.get('tag')=='rm-native-warp' for o in c['outbounds'])
             if os.environ.get('BAD_CONFIG'): sys.exit(1)
-        else: print('42:'+(r/'generation').read_text())
+        else:
+            if os.environ.get('NO_CORE'): sys.exit(3)
+            print('42:'+(r/'generation').read_text())
 else: raise RuntimeError(name)
 ''')
         mock.chmod(0o700)
@@ -169,10 +171,16 @@ else: raise RuntimeError(name)
             run("validate", config)
             failed = run("validate", config, check=False, extra={"BAD_CONFIG": "1"})
             assert failed.returncode != 0 and "RM_WARP_FAILURE=validate" in failed.stderr
+            (stack / "warp/xray-before").write_text('missing\n')
+            failed=run('validate',check=False)
+            assert failed.returncode!=0, 'legacy missing marker falsely confirmed restart'
             run("checkpoint")
             stale = run("validate", check=False)
             assert stale.returncode != 0, "old running process incorrectly confirmed restart"
             (root / "generation").write_text("100")
+            run("validate")
+            run("checkpoint",extra={"NO_CORE":"1"})
+            assert (stack/'warp/xray-before').read_text().strip()=='absent-v2'
             run("validate")
             current["services"]["remnanode"]["environment"]["CUSTOM_SETTING"] = "retained"
             (stack / "compose.json").write_text(json.dumps(current))

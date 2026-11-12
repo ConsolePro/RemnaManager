@@ -38,11 +38,37 @@ running_xray() {
     local cid
     cid=$(compose ps -q remnanode)
     [[ -n $cid ]]
-    docker exec "$cid" sh -c 'for p in /proc/[0-9]*/comm; do if [ "$(cat "$p" 2>/dev/null)" = xray ]; then d=${p%/comm}; printf "%s:" "${d##*/}"; awk '\''{print $22}'\'' "$d/stat"; exit 0; fi; done; exit 1'
+    local process
+    process=$(docker exec "$cid" sh -c '
+        expected=$(readlink -f /usr/local/bin/rw-core 2>/dev/null || true)
+        if [ ! -x "$expected" ]; then expected=$(readlink -f /usr/local/bin/xray 2>/dev/null || true); fi
+        [ -x "$expected" ] || exit 2
+        for exe in /proc/[0-9]*/exe; do
+            target=$(readlink "$exe" 2>/dev/null || true)
+            target=${target% (deleted)}
+            [ "$target" = "$expected" ] || continue
+            proc=${exe%/exe}
+            started=$(awk '\''{sub(/^.*\) /, ""); print $20}'\'' "$proc/stat" 2>/dev/null) || continue
+            [ -n "$started" ] || continue
+            printf "%s:%s\n" "${proc##*/}" "$started"
+            exit 0
+        done
+        exit 3
+    ') || return "$?"
+    printf '%s:%s\n' "$cid" "$process"
 }
 case $RM_WARP_ACTION in
+running)
+    stage=validate
+    running_xray >/dev/null
+    ;;
 checkpoint)
-    running_xray >"$dir/xray-before" || printf 'missing\n' >"$dir/xray-before"
+    stage=validate
+    if running_xray >"$dir/xray-before"; then :; else
+        probe_status=$?
+        [[ $probe_status == 3 ]]
+        printf 'absent-v2\n' >"$dir/xray-before"
+    fi
     ;;
 validate)
     stage=validate
@@ -55,13 +81,16 @@ validate)
             config=$(mktemp /tmp/remnamanager-warp.XXXXXXXX.json) || exit 1
             trap '\''rm -f "$config"'\'' EXIT HUP INT TERM
             cat >"$config" || exit 1
-            binary=$(command -v xray || true)
+            binary=$(command -v rw-core || command -v xray || true)
             [ -n "$binary" ] || binary=/usr/local/bin/xray
             "$binary" run -test -format json -config "$config" >/dev/null 2>&1
         '
     else
         process=$(running_xray)
-        [[ -n $process && -f $dir/xray-before && $process != "$(cat "$dir/xray-before")" ]]
+        [[ -n $process && -f $dir/xray-before ]]
+        previous=$(cat "$dir/xray-before")
+        # A legacy "missing" marker is not proof that the core restarted.
+        [[ $previous == absent-v2 || $previous =~ ^([^[:space:]:]+:)?[0-9]+:[0-9]+$ && $process != "$previous" ]]
     fi
     ;;
 install)
