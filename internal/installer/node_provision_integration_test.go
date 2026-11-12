@@ -137,7 +137,8 @@ func TestLiveNodeProvisioningAPI(t *testing.T) {
 			t.Fatal("resume duplicated an API resource", path, e)
 		}
 	}
-	userData, err := r.nodeAPI(ctx, "POST", "/users", map[string]any{"username": "rm_provision_" + time.Now().Format("150405"), "expireAt": "2099-12-31T00:00:00.000Z", "trafficLimitBytes": 0, "activeInternalSquads": []string{j.SquadUUID}})
+	manualSquadID := createManualTestSquad(t, r, j)
+	userData, err := r.nodeAPI(ctx, "POST", "/users", map[string]any{"username": "rm_provision_" + time.Now().Format("150405"), "expireAt": "2099-12-31T00:00:00.000Z", "trafficLimitBytes": 0, "activeInternalSquads": []string{manualSquadID}})
 	if err != nil {
 		t.Fatal(err)
 	}

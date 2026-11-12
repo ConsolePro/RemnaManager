@@ -3,6 +3,7 @@ package services
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -70,10 +71,16 @@ type NodeRequest struct {
 }
 
 type NodeInstallParameters struct {
-	Name, Address, Domain, PanelIP         string
-	ProfileName, CountryCode, SiteTemplate string
-	APIPort                                int
-	SSH                                    NodeSSH
+	Name, Address, Domain, PanelIP                   string
+	ProfileName, HostName, CountryCode, SiteTemplate string
+	HostLanguage                                     string
+	APIPort                                          int
+	SSH                                              NodeSSH
+}
+
+// RealityProfileName expands the short name used by new node installations.
+func (p NodeInstallParameters) RealityProfileName() string {
+	return "VLESS_REALITY_" + strings.ReplaceAll(strings.TrimPrefix(strings.TrimSpace(p.ProfileName), "VLESS_REALITY_"), " ", "_")
 }
 
 type NodeInstallStatus struct {
@@ -90,14 +97,16 @@ type NodeInstallStatus struct {
 }
 
 type NodeResult struct {
-	Nodes          []Node
-	SSH            NodeSSH
-	Fingerprint    string
-	HostKeyChanged bool
-	Text, TextRU   string
-	Command        []string
-	Install        *NodeInstallStatus
-	Jobs           []NodeInstallStatus
+	Version          string
+	Nodes            []Node
+	SSH              NodeSSH
+	Fingerprint      string
+	HostKeyChanged   bool
+	NeedsSSHSettings bool
+	Text, TextRU     string
+	Command          []string
+	Install          *NodeInstallStatus
+	Jobs             []NodeInstallStatus
 }
 
 type NodeManager interface {

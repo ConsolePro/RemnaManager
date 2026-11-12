@@ -3,6 +3,7 @@ umask 077
 [[ $RM_JOB_ID =~ ^[a-f0-9]{32}$ && $RM_UPDATE_ID =~ ^[a-f0-9]{32}$ && $RM_REINSTALL =~ ^[01]$ ]]
 root=/var/lib/remnamanager-node
 stack=/opt/remnanode
+if [[ -f $stack/state/job-id ]]; then root=$stack/state; fi
 dir=$root/updates/$RM_UPDATE_ID
 unit=remnamanager-node-update-rollback
 [[ $(id -u) == 0 && -d /run/systemd/system ]]
@@ -11,7 +12,7 @@ exec 9>"$root/agent.lock"
 flock -w 30 9
 exec 3>&1
 exec >>"$root/install.log" 2>&1
-trap 'echo "Node update failed; see /var/lib/remnamanager-node/install.log" >&3' ERR
+trap 'echo "Node update failed; see $root/install.log" >&3' ERR
 write() {
     local path=$1 tmp
     [[ ! -L $path && ( ! -e $path || -f $path ) ]]
@@ -34,6 +35,11 @@ status)
     if [[ -f $dir/phase ]]; then report; else echo RM_UPDATE_PHASE=missing >&3; fi
     ;;
 prepare)
+    for pending in "$root"/updates/*/phase "$root"/core-updates/*/phase; do
+        [[ -f $pending ]] || continue
+        case $(cat "$pending") in prepared|trial) echo 'Finish the pending node/core transaction first.' >&2; exit 1;; esac
+    done
+    if [[ -f $root/site-change/phase && $(cat "$root/site-change/phase") == trial ]]; then echo 'Finish website recovery first.' >&2; exit 1; fi
     [[ $RM_PREVIOUS_IMAGE =~ ^remnawave/node@sha256:[a-f0-9]{64}$ ]]
     [[ ! -e $dir ]]
     [[ ! -L $stack/compose.json && -f $stack/compose.json ]]
@@ -69,6 +75,7 @@ umask 077
 dir=$(dirname "$(readlink -f "$0")")
 root=/var/lib/remnamanager-node
 stack=/opt/remnanode
+if [[ -f $stack/state/job-id ]]; then root=$stack/state; fi
 exec >>"$root/install.log" 2>&1
 exec 9>"$root/agent.lock"
 flock -w 180 9

@@ -28,6 +28,24 @@ func TestNodeCountryPickerRestoresTypedDetails(t *testing.T) {
 	}
 }
 
+func TestNodeWizardUsesProfileNameForEmptyHost(t *testing.T) {
+	m := testModel(t, true)
+	m.nodeConnectWizard = true
+	m.nodeInstallJob = &services.NodeInstallStatus{Version: 3, ID: strings.Repeat("a", 32)}
+	m.nodeInstallParams = services.NodeInstallParameters{Name: "Finland", ProfileName: "FN1001", Address: "192.0.2.10", Domain: "cover.example.test", SSH: services.NodeSSH{Host: "192.0.2.10", Port: 22}}
+	m.prepareNodeDetails()
+	m.screen = "nodeDetailsInput"
+	m.focus = 7
+	press(&m, tea.KeyEnter)
+	if m.screen != "nodeInstallConfirm" || m.nodeInstallParams.HostName != "" {
+		t.Fatal("empty host should use the profile name", m.screen, m.problem)
+	}
+	view := m.nodeInstallView()
+	if strings.Count(view, "VLESS_REALITY_FN1001") != 2 {
+		t.Fatal("confirmation should show matching profile and default host", view)
+	}
+}
+
 func TestFirstTrustCannotAcceptChangedKeyAndHelpFitsNormalTerminal(t *testing.T) {
 	m := testModel(t, true)
 	m.nodeConnectWizard = true

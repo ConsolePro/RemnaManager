@@ -28,6 +28,31 @@ func ValidNodeCountry(code string) bool {
 	}
 	return false
 }
+
+func nodeCountryHostPrefix(j NodeJob) string {
+	if j.Version < 4 {
+		return ""
+	}
+	return NodeCountryHostPrefix(j.Params.CountryCode, j.Params.HostLanguage)
+}
+
+// NodeCountryHostPrefix formats the country selected in the wizard for subscriptions.
+func NodeCountryHostPrefix(code, lang string) string {
+	for _, country := range NodeCountries() {
+		if country.Code != code || code == "XX" {
+			continue
+		}
+		name := country.Name
+		if lang != "en" {
+			if region, err := language.ParseRegion(code); err == nil {
+				name = display.Russian.Regions().Name(region)
+			}
+		}
+		flag := string([]rune{rune(0x1f1e6 + int(code[0]-'A')), rune(0x1f1e6 + int(code[1]-'A'))})
+		return flag + " " + name + " · "
+	}
+	return ""
+}
 func (c NodeCountry) Label(lang string) string {
 	name := c.Name
 	if lang != "en" {

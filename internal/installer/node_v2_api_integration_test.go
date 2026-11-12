@@ -96,7 +96,7 @@ func TestLiveNodeV2APIAndRealityWebsite(t *testing.T) {
 	if err := r.waitInstalledNode(ctx, j); err != nil {
 		t.Fatal("v2 node did not connect", err)
 	}
-	if err := r.ensureNodeHostAndSquad(ctx, &j); err != nil {
+	if err := r.ensureNodeHost(ctx, &j); err != nil {
 		t.Fatal("Firefox host/squad rejected", err)
 	}
 	if err := r.ensureNodeObjects(ctx, &j); err != nil {
@@ -126,7 +126,8 @@ func TestLiveNodeV2APIAndRealityWebsite(t *testing.T) {
 	if !found {
 		t.Fatal("real Firefox host missing")
 	}
-	userData, err := r.nodeAPI(ctx, "POST", "/users", map[string]any{"username": "rmv2_" + time.Now().Format("150405"), "expireAt": "2099-12-31T00:00:00.000Z", "trafficLimitBytes": 0, "activeInternalSquads": []string{j.SquadUUID}})
+	manualSquadID := createManualTestSquad(t, r, j)
+	userData, err := r.nodeAPI(ctx, "POST", "/users", map[string]any{"username": "rmv2_" + time.Now().Format("150405"), "expireAt": "2099-12-31T00:00:00.000Z", "trafficLimitBytes": 0, "activeInternalSquads": []string{manualSquadID}})
 	if err != nil {
 		t.Fatal(err)
 	}

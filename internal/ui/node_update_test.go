@@ -17,9 +17,11 @@ func (f *updateNodeFake) ManageNodes(ctx context.Context, req services.NodeReque
 	}
 	f.requests = append(f.requests, req)
 	switch req.Action {
+	case "node-core-prepare":
+		return services.NodeResult{Version: "v26.9.9", Text: "Xray → v26.9.9"}, nil
 	case "node-update-prepare", "node-reinstall-prepare":
 		return services.NodeResult{SSH: services.NodeSSH{Host: "node.example.test", Port: 22}, Fingerprint: "SHA256:verified-update-key", Text: "remnawave/node@sha256:" + strings.Repeat("a", 64)}, nil
-	case "node-update-auth", "node-reinstall-auth":
+	case "node-core-auth", "node-update-auth", "node-reinstall-auth":
 		return services.NodeResult{Command: []string{"ssh", "fixture"}}, nil
 	}
 	return services.NodeResult{TextRU: "Обновление завершено"}, nil
@@ -45,11 +47,9 @@ func checkNodeReplacementConfirmation(t *testing.T, action string) {
 	cmd = press(&m, tea.KeyEnter)
 	next, _ = m.Update(cmd())
 	m = next.(Model)
-	if m.screen != "nodesTrust" || len(f.requests) != 2 {
-		t.Fatal("update did not verify SSH trust", m.screen)
+	if m.screen != "nodesConfirm" || len(f.requests) != 2 {
+		t.Fatal("update must use saved SSH without manual fingerprint input", m.screen)
 	}
-	m.inputs[0].SetValue("SHA256:verified-update-key")
-	press(&m, tea.KeyEnter)
 	if m.screen != "nodesConfirm" || len(f.requests) != 2 || !strings.Contains(m.View(), "remnawave/node") {
 		t.Fatal("update ran before confirmation")
 	}
@@ -81,7 +81,61 @@ func TestNodeUpdateBackDoesNotOpenSSHSettings(t *testing.T) {
 	}
 	m.screen = "nodesConfirm"
 	press(&m, tea.KeyEsc)
-	if m.screen != "nodesTrust" {
-		t.Fatal("lost update trust screen")
+	if m.screen != "nodesList" {
+		t.Fatal("back should return to node selection")
+	}
+}
+
+func TestWebsiteChangeKeepsSelectionThroughAuthentication(t *testing.T) {
+	m := testModel(t, true)
+	f := &updateNodeFake{}
+	m.service = f
+	next, cmd := m.openNodeOperation(operation("Сайт", "Website", "node-site"))
+	m = next.(Model)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	press(&m, tea.KeyEnter)
+	if m.screen != "nodesInput" {
+		t.Fatal(m.screen)
+	}
+	m.inputs[0].SetValue("atlas")
+	press(&m, tea.KeyEnter)
+	if m.screen != "nodesConfirm" || len(f.requests) != 1 {
+		t.Fatal("website changed before confirmation")
+	}
+	cmd = press(&m, tea.KeyEnter)
+	for cmd != nil {
+		next, cmd = m.Update(cmd())
+		m = next.(Model)
+	}
+	if m.screen != "nodesResult" || len(f.requests) != 3 || f.requests[2].Action != "node-site-run" || f.requests[2].Value != "atlas" {
+		t.Fatal("selected website lost during authentication", f.requests)
+	}
+}
+
+func TestXrayVersionSurvivesAuthenticationAndRequiresConfirmation(t *testing.T) {
+	m := testModel(t, true)
+	f := &updateNodeFake{}
+	m.service = f
+	next, cmd := m.openNodeOperation(operation("Ядро Xray", "Xray core", "node-core"))
+	m = next.(Model)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	cmd = press(&m, tea.KeyEnter)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if m.screen != "nodesConfirm" || m.nodeRequest.Value != "v26.9.9" || len(f.requests) != 2 {
+		t.Fatal("core update ran before confirmation")
+	}
+	cmd = press(&m, tea.KeyEnter)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	next, cmd = m.Update(nodeResultMsg{run: m.run, action: "node-core-authenticated"})
+	m = next.(Model)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	last := f.requests[len(f.requests)-1]
+	if m.screen != "nodesResult" || last.Action != "node-core-run" || last.Value != "v26.9.9" {
+		t.Fatal("selected Xray version lost during authentication")
 	}
 }

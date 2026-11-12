@@ -26,7 +26,7 @@ func (m *Model) prepareNodeDetails() {
 		p.Name = ""
 		p.Domain = ""
 	}
-	if p.ProfileName == "" {
+	if p.ProfileName == "" && (m.nodeInstallJob == nil || m.nodeInstallJob.Version < 4) {
 		p.ProfileName = "Node_" + m.nodeInstallJob.ID[:8]
 	}
 	if p.APIPort == 0 {
@@ -38,7 +38,7 @@ func (m *Model) prepareNodeDetails() {
 	if p.SiteTemplate == "" {
 		p.SiteTemplate = "random"
 	}
-	m.inputs = []textinput.Model{newInput("Node-01", p.Name), newInput("XX", p.CountryCode), newInput("Node_profile", p.ProfileName), newInput("2222", strconv.Itoa(p.APIPort)), newInput("cover.example.com", p.Domain), newInput("random", p.SiteTemplate), newInput(m.l("Пусто — определить по SSH", "Empty — detect over SSH"), p.PanelIP)}
+	m.inputs = []textinput.Model{newInput("Node-01", p.Name), newInput("XX", p.CountryCode), newInput("FN1001", p.ProfileName), newInput("2222", strconv.Itoa(p.APIPort)), newInput("cover.example.com", p.Domain), newInput("random", p.SiteTemplate), newInput(m.l("Пусто — определить по SSH", "Empty — detect over SSH"), p.PanelIP), newInput(m.l("Пусто — название профиля", "Empty — profile name"), p.HostName)}
 	m.focus = 0
 	for i := range m.inputs {
 		m.inputs[i].Width = max(1, min(60, m.width-12))
@@ -68,7 +68,10 @@ func (m Model) updateNodeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.inputs[1].SetValue(country)
 			m.inputs[1].Blur()
 			m.focus = 2
-			return m, m.inputs[2].Focus()
+			if m.nodeInstallJob != nil && m.nodeInstallJob.Version >= 4 {
+				m.focus = 3
+			}
+			return m, m.inputs[m.focus].Focus()
 		} else {
 			var cmd tea.Cmd
 			m.inputs[0], cmd = m.inputs[0].Update(msg)
@@ -102,6 +105,9 @@ func (m Model) updateNodeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			step = len(m.inputs) - 1
 		}
 		m.focus = (m.focus + step) % len(m.inputs)
+		if m.nodeInstallJob != nil && m.nodeInstallJob.Version >= 4 && m.focus == 2 {
+			m.focus = (m.focus + step) % len(m.inputs)
+		}
 		return m, m.inputs[m.focus].Focus()
 	}
 	if key == "enter" {
@@ -123,6 +129,9 @@ func (m Model) updateNodeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.focus < len(m.inputs)-1 {
 			m.inputs[m.focus].Blur()
 			m.focus++
+			if m.screen == "nodeDetailsInput" && m.nodeInstallJob != nil && m.nodeInstallJob.Version >= 4 && m.focus == 2 {
+				m.focus++
+			}
 			return m, m.inputs[m.focus].Focus()
 		}
 		if m.screen == "nodeConnectInput" {
@@ -147,9 +156,20 @@ func (m Model) updateNodeWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p := m.nodeInstallParams
 		p.Name, p.CountryCode, p.ProfileName = strings.TrimSpace(m.inputs[0].Value()), strings.ToUpper(strings.TrimSpace(m.inputs[1].Value())), strings.TrimSpace(m.inputs[2].Value())
 		p.APIPort, p.Domain, p.SiteTemplate, p.PanelIP = port, strings.ToLower(strings.TrimSpace(m.inputs[4].Value())), strings.ToLower(strings.TrimSpace(m.inputs[5].Value())), strings.TrimSpace(m.inputs[6].Value())
+		p.HostName = strings.TrimSpace(m.inputs[7].Value())
+		p.HostLanguage = m.cfg.Language
+		if m.nodeInstallJob != nil && m.nodeInstallJob.Version >= 4 {
+			p.ProfileName = p.Name
+		}
 		if err := installer.ValidateNodeInstall(p); err != nil {
 			m.problem = m.errorText(err)
 			return m, nil
+		}
+		if m.nodeInstallJob == nil || m.nodeInstallJob.Version >= 3 {
+			if err := installer.ValidateNodeShortProfileName(p); err != nil {
+				m.problem = m.errorText(err)
+				return m, nil
+			}
 		}
 		m.nodeInstallParams = p
 		m.problem = ""
@@ -200,8 +220,17 @@ func (m Model) nodeWizardView() string {
 		return strings.Join(append(rows, "", m.l("Далее проверим SSH-сервер и запросим пароль root.\nПароль вводится скрыто в OpenSSH и не сохраняется.\nМенеджер создаст свой ключ и проверит новый вход по нему.\nКлюч от панели хостинга не нужен.", "Next: verify the SSH server, then enter the root password.\nOpenSSH hides password input; the password is not saved.\nThe manager creates its own key and verifies a fresh key-only login.\nNo hosting-provider private key is needed.")), "\n")
 	}
 	rows := []string{title, "", fmt.Sprintf("root@%s · SSH %d", m.nodeInstallParams.Address, m.nodeInstallParams.SSH.Port), ""}
-	labels := [][2]string{{"Название ноды", "Node name"}, {"Страна (Enter — список с поиском)", "Country (Enter — searchable list)"}, {"Название профиля (латиница; tag: VLESS_REALITY_…)", "Profile name (Latin characters; tag: VLESS_REALITY_…)"}, {"Порт API ноды (доступ только с IP панели)", "Node API port (panel IP only)"}, {"Домен сайта и сертификата (A/AAAA на ноду)", "Website and certificate domain (A/AAAA to node)"}, {"Шаблон сайта (Enter — выбор)", "Website template (Enter — choose)"}, {"IP панели (пусто — определить по SSH)", "Panel IP (empty — detect over SSH)"}}
+	profileLabel := m.l("Короткое имя профиля (FN1001 → VLESS_REALITY_FN1001)", "Short profile name (FN1001 → VLESS_REALITY_FN1001)")
+	hostLabel := m.l("Название хоста подписки (пусто — название профиля)", "Subscription host name (empty — profile name)")
+	if m.nodeInstallJob != nil && m.nodeInstallJob.Version < 3 {
+		profileLabel = m.l("Название профиля (латиница; tag: VLESS_REALITY_…)", "Profile name (Latin characters; tag: VLESS_REALITY_…)")
+		hostLabel = m.l("Название хоста подписки (пусто — название ноды)", "Subscription host name (empty — node name)")
+	}
+	labels := [][2]string{{"Название ноды", "Node name"}, {"Страна (Enter — список с поиском)", "Country (Enter — searchable list)"}, {profileLabel, profileLabel}, {"Порт API ноды (доступ только с IP панели)", "Node API port (panel IP only)"}, {"Домен сайта и сертификата (A/AAAA на ноду)", "Website and certificate domain (A/AAAA to node)"}, {"Шаблон сайта (Enter — выбор)", "Website template (Enter — choose)"}, {"IP панели (пусто — определить по SSH)", "Panel IP (empty — detect over SSH)"}, {hostLabel, hostLabel}}
 	for i, label := range labels {
+		if i == 2 && m.nodeInstallJob != nil && m.nodeInstallJob.Version >= 4 {
+			continue
+		}
 		rows = append(rows, m.l(label[0], label[1]), m.inputs[i].View())
 	}
 	return strings.Join(append(rows, "", m.l("Шаг 2. SSH-ключ настроен. Теперь параметры профиля и ноды.\nTab — поле · Enter — далее / список · Esc — сохранить и выйти", "Step 2. SSH key configured. Set profile and node parameters.\nTab — field · Enter — continue / list · Esc — save connection and leave")), "\n")

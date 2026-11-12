@@ -57,7 +57,7 @@ func (m Model) startNodeRequest(request services.NodeRequest) (tea.Model, tea.Cm
 		if request.Action == "node-install-step" {
 			timeout = 20 * time.Minute
 		}
-		if request.Action == "node-update-run" || request.Action == "node-reinstall-run" {
+		if request.Action == "node-update-run" || request.Action == "node-reinstall-run" || request.Action == "node-site-run" || request.Action == "node-core-run" {
 			timeout = 10 * time.Minute
 		}
 		if request.Action == "node-install-confirm" {
@@ -121,7 +121,7 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 	if len(msg.result.Command) > 0 {
 		cmd := exec.CommandContext(m.ctx, msg.result.Command[0], msg.result.Command[1:]...)
 		run := m.run
-		if msg.action == "node-install-auth" || msg.action == "node-update-auth" || msg.action == "node-reinstall-auth" {
+		if msg.action == "node-install-auth" || msg.action == "node-update-auth" || msg.action == "node-reinstall-auth" || msg.action == "node-site-auth" || msg.action == "node-ssh-auth" || msg.action == "node-core-auth" {
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 				action := strings.TrimSuffix(msg.action, "-auth") + "-authenticated"
 				return nodeResultMsg{run, action, services.NodeResult{Install: msg.result.Install}, err}
@@ -144,14 +144,31 @@ func (m Model) receiveNodeResult(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 		m.prepareNodeSSHInputs()
 		m.screen = "nodesInput"
 		return m, m.inputs[0].Focus()
-	case "node-update-authenticated", "node-reinstall-authenticated":
-		return m.startNodeRequest(services.NodeRequest{Action: strings.TrimSuffix(msg.action, "-authenticated") + "-run", UUID: m.nodeTarget.UUID})
-	case "node-ssh-prepare", "node-update-prepare", "node-reinstall-prepare":
-		if msg.action == "node-update-prepare" || msg.action == "node-reinstall-prepare" {
+	case "node-ssh-auth", "node-ssh-authenticated":
+		if msg.result.NeedsSSHSettings {
+			m.nodeSSH = msg.result.SSH
+			m.prepareNodeSSHInputs()
+			m.screen = "nodesInput"
+			return m, m.inputs[0].Focus()
+		}
+		return m.startNodeRequest(services.NodeRequest{Action: "node-ssh-open", UUID: m.nodeTarget.UUID})
+	case "node-core-auth", "node-core-authenticated":
+		return m.startNodeRequest(services.NodeRequest{Action: "node-core-run", UUID: m.nodeTarget.UUID, Value: m.nodeRequest.Value})
+	case "node-site-auth", "node-site-authenticated":
+		return m.startNodeRequest(services.NodeRequest{Action: "node-site-run", UUID: m.nodeTarget.UUID, Value: m.nodeRequest.Value})
+	case "node-update-auth", "node-reinstall-auth", "node-update-authenticated", "node-reinstall-authenticated":
+		return m.startNodeRequest(services.NodeRequest{Action: strings.TrimSuffix(strings.TrimSuffix(msg.action, "-authenticated"), "-auth") + "-run", UUID: m.nodeTarget.UUID})
+	case "node-core-prepare", "node-ssh-prepare", "node-update-prepare", "node-reinstall-prepare":
+		if msg.action == "node-core-prepare" || msg.action == "node-update-prepare" || msg.action == "node-reinstall-prepare" {
 			m.panelResult = msg.result.Text
 			if m.cfg.Language != "en" && msg.result.TextRU != "" {
 				m.panelResult = msg.result.TextRU
 			}
+		}
+		if msg.action != "node-ssh-prepare" {
+			m.nodeRequest = services.NodeRequest{Action: m.nodeAction + "-auth", UUID: m.nodeTarget.UUID, Value: msg.result.Version}
+			m.screen = "nodesConfirm"
+			return m, nil
 		}
 		m.nodeSSH = msg.result.SSH
 		m.nodeFingerprint = msg.result.Fingerprint
@@ -222,9 +239,14 @@ func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case "node-restart":
 				m.screen = "nodesConfirm"
 			case "node-ssh":
-				m.nodeRequest.Action = "node-ssh-settings"
+				m.nodeRequest.Action = "node-ssh-auth"
 				return m.startNodeRequest(m.nodeRequest)
-			case "node-update", "node-reinstall":
+			case "node-site":
+				m.inputs = []textinput.Model{newInput("studio / atlas / journal", "studio")}
+				m.focus = 0
+				m.screen = "nodesInput"
+				return m, m.inputs[0].Focus()
+			case "node-core", "node-update", "node-reinstall":
 				return m.startNodeRequest(services.NodeRequest{Action: m.nodeAction + "-prepare", UUID: m.nodeTarget.UUID})
 			}
 		}
@@ -244,7 +266,19 @@ func (m Model) updateNodeScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.focus++
 				return m, m.inputs[m.focus].Focus()
 			}
-			if m.nodeAction == "node-rename" {
+			if m.nodeAction == "node-site" {
+				name := strings.TrimSpace(m.inputs[0].Value())
+				found := false
+				for _, template := range installer.NodeSiteTemplates {
+					found = found || name == template
+				}
+				if !found {
+					m.problem = "studio / atlas / journal"
+					return m, nil
+				}
+				m.nodeRequest = services.NodeRequest{Action: "node-site-auth", UUID: m.nodeTarget.UUID, Value: name}
+				m.screen = "nodesConfirm"
+			} else if m.nodeAction == "node-rename" {
 				name := strings.TrimSpace(m.inputs[0].Value())
 				if err := installer.ValidateNodeName(name); err != nil {
 					m.problem = m.errorText(err)
@@ -355,6 +389,9 @@ func (m Model) nodesView() string {
 	case "nodesInput":
 		rows := []string{title, "", m.nodeTarget.Name + " · " + m.nodeTarget.Address, ""}
 		labels := []string{m.l("Новое имя", "New name")}
+		if m.nodeAction == "node-site" {
+			labels = []string{m.l("Шаблон сайта: studio / atlas / journal", "Website template: studio / atlas / journal")}
+		}
 		if m.nodeAction == "node-ssh" {
 			labels = []string{m.l("SSH-адрес", "SSH address"), m.l("SSH-порт", "SSH port"), m.l("Путь к приватному ключу (необязательно)", "Private key path (optional)")}
 		}
@@ -385,6 +422,10 @@ func (m Model) nodesView() string {
 	case "nodesConfirm":
 		text := title + "\n\n" + m.nodeTarget.Name + " · " + m.nodeTarget.Address + "\nUUID: " + m.nodeTarget.UUID + "\n\n"
 		switch m.nodeAction {
+		case "node-core":
+			text += m.panelResult + "\n\n" + warning.Render(m.l("Будет обновлено только ядро Xray. Образ ноды и профиль сохраняются.\nКонтейнер перезапустится; клиентские соединения могут оборваться.\nПри ошибке проверки версии, связи с панелью или HTTPS выполняется откат.", "Only the Xray core will change. The node image and profile are retained.\nThe container will restart; client connections may drop.\nFailure to verify the version, panel connection or HTTPS triggers rollback."))
+		case "node-site":
+			text += m.l("Новый шаблон: ", "New template: ") + m.nodeRequest.Value + "\n\n" + m.l("Будут заменены только страницы сайта. После проверки HTTPS шаблон сохранится автоматически; при ошибке вернётся прежний сайт.", "Website pages will be replaced. HTTPS verification commits the template automatically; failure restores the previous website.")
 		case "node-rename":
 			text += m.l("Новое имя: ", "New name: ") + m.nodeRequest.Value
 		case "node-toggle":

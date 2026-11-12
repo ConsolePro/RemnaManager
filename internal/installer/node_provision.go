@@ -29,21 +29,23 @@ import (
 var nodeAgent []byte
 
 type NodeJob struct {
-	Version                                                 int
-	DetailsPending                                          bool
-	ID                                                      string
-	Params                                                  services.NodeInstallParameters
-	Email                                                   string
-	Secret, RealityKey, ShortID, Image                      string
-	ShortIDs                                                []string
-	ProfileUUID, InboundUUID, NodeUUID, HostUUID, SquadUUID string
-	Completed                                               map[int]bool
-	CreatedAt, UpdatedAt                                    time.Time
-	Ready, FirewallPending                                  bool
-	RollbackAt                                              time.Time
-	LastError                                               string
-	UpdateID, UpdateTarget                                  string
-	UpdateReinstall                                         bool
+	CoreVersion, CoreBinary, CoreUpdateID, CoreTargetVersion string
+	Version                                                  int
+	LayoutVersion                                            int
+	DetailsPending                                           bool
+	ID                                                       string
+	Params                                                   services.NodeInstallParameters
+	Email                                                    string
+	Secret, RealityKey, ShortID, Image                       string
+	ShortIDs                                                 []string
+	ProfileUUID, InboundUUID, NodeUUID, HostUUID, SquadUUID  string
+	Completed                                                map[int]bool
+	CreatedAt, UpdatedAt                                     time.Time
+	Ready, FirewallPending                                   bool
+	RollbackAt                                               time.Time
+	LastError                                                string
+	UpdateID, UpdateTarget                                   string
+	UpdateReinstall                                          bool
 }
 
 func NodeInstallStages() [][2]string {
@@ -57,7 +59,7 @@ func NodeInstallStagesForVersion(version int) [][2]string {
 			{"Docker, Nginx и зависимости", "Docker, Nginx and dependencies"},
 			{"SECRET_KEY и закрепление образа", "SECRET_KEY and pinned image"},
 			{"Сайт selfsteal, ACME и запуск ноды", "Selfsteal website, ACME and node startup"},
-			{"Хост Firefox и internal squad", "Firefox host and internal squad"},
+			{"Хост подписки Firefox", "Firefox subscription host"},
 			{"Проверка подключения к панели", "Panel connectivity check"},
 			{"Firewall с таймером отката", "Firewall with rollback timer"},
 			{"Подтверждение SSH-доступа", "SSH access confirmation"},
@@ -69,7 +71,7 @@ func NodeInstallStagesForVersion(version int) [][2]string {
 		{"Ключ панели и закрепление образа ноды", "Panel key and pinned node image"},
 		{"Selfsteal, HTTPS и запуск ноды", "Selfsteal, HTTPS and node startup"},
 		{"Профиль Reality и inbound", "Reality profile and inbound"},
-		{"Нода, хост подписки и internal squad", "Node, subscription host and internal squad"},
+		{"Нода и хост подписки", "Node and subscription host"},
 		{"Проверка подключения к панели", "Panel connectivity check"},
 		{"Firewall с таймером отката", "Firewall with rollback timer"},
 		{"Подтверждение доступа по SSH", "SSH access confirmation"},
@@ -148,8 +150,14 @@ func (r *Real) loadNodeJob(id string) (NodeJob, error) {
 	if err = json.Unmarshal(data, &j); err != nil {
 		return j, err
 	}
-	if j.ID != id || (j.Version != 1 && j.Version != 2) || j.Completed == nil || j.RealityKey == "" || len(j.ShortID) != 16 {
+	if j.ID != id || (j.Version != 1 && j.Version != 2 && j.Version != 3 && j.Version != 4) || j.Completed == nil || j.RealityKey == "" || len(j.ShortID) != 16 {
 		return j, errors.New("invalid installation journal; refusing to regenerate keys")
+	}
+	if j.CoreUpdateID != "" && (!regexp.MustCompile(`^[a-f0-9]{32}$`).MatchString(j.CoreUpdateID) || !coreVersionPattern.MatchString(j.CoreTargetVersion)) || j.CoreUpdateID == "" && j.CoreTargetVersion != "" {
+		return j, errors.New("invalid Xray update journal")
+	}
+	if j.CoreBinary != "" && (!corePathPattern.MatchString(j.CoreBinary) || !coreVersionPattern.MatchString(j.CoreVersion) || !strings.HasPrefix(j.CoreBinary, "/opt/remnanode/xray/"+j.CoreVersion+"/")) {
+		return j, errors.New("invalid saved Xray override")
 	}
 	key, keyErr := base64.RawURLEncoding.DecodeString(j.RealityKey)
 	short, shortErr := hex.DecodeString(j.ShortID)
@@ -320,7 +328,7 @@ func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) 
 		if err != nil {
 			return result, err
 		}
-		j := NodeJob{Version: 2, DetailsPending: connect, ID: id[:32], Params: p, Email: r.state.Params.Email, RealityKey: base64.RawURLEncoding.EncodeToString(curve.Bytes()), ShortID: short[:16], Completed: map[int]bool{}, CreatedAt: time.Now().UTC()}
+		j := NodeJob{Version: 4, LayoutVersion: 1, DetailsPending: connect, ID: id[:32], Params: p, Email: r.state.Params.Email, RealityKey: base64.RawURLEncoding.EncodeToString(curve.Bytes()), ShortID: short[:16], Completed: map[int]bool{}, CreatedAt: time.Now().UTC()}
 		if err := prepareNewNodeSettings(&j); err != nil {
 			return result, err
 		}
@@ -379,7 +387,7 @@ func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) 
 			return result, err
 		}
 		for _, profile := range profiles {
-			if rawString(profile["name"]) == j.Params.ProfileName {
+			if rawString(profile["name"]) == nodeProfileName(j) {
 				return result, services.LocalizedError("Профиль с таким названием уже существует. Укажите другое имя профиля.", "A profile with this name already exists. Choose a different profile name.")
 			}
 		}
@@ -435,17 +443,26 @@ func (r *Real) nodeProvision(ctx context.Context, request services.NodeRequest) 
 		result.Install = &status
 		return result, nil
 	case "node-install-auth":
-		key, fingerprint, e := r.scanNodeSSH(ctx, j.Params.SSH)
+		if j.Params.SSH.IdentityFile != "" {
+			if e := r.checkFreshNodeSSH(ctx, j); e == nil {
+				return result, nil
+			}
+			if e := r.resetNodeManagedKey(&j); e != nil {
+				return result, e
+			}
+		}
+		settings := j.Params.SSH
+		settings.IdentityFile = ""
+		key, _, e := r.scanNodeSSH(ctx, settings)
 		if e != nil {
 			return result, e
-		}
-		if request.Fingerprint != fingerprint {
-			return result, errors.New("confirm the current SSH fingerprint before authenticating")
 		}
 		j.Params.SSH.HostKey = key
 		if e = r.saveNodeJob(&j); e != nil {
 			return result, e
 		}
+		status = jobStatus(j)
+		result.Install = &status
 		// An old master must never redirect a resumed job to its previous session.
 		_, _ = r.Runner.Run(ctx, nil, "ssh", "-F", "/dev/null", "-S", r.nodeControl(j.ID), "-O", "exit", "root@"+j.Params.SSH.Host)
 		if info, statErr := os.Lstat(r.nodeControl(j.ID)); statErr == nil {
@@ -548,6 +565,13 @@ func (r *Real) provisionSSHArgs(j NodeJob, batch bool) ([]string, error) {
 	}
 	return args, nil
 }
+func nodeRemoteLog(j NodeJob) string {
+	if j.Version >= 4 || j.LayoutVersion == 1 {
+		return "/opt/remnanode/state/install.log"
+	}
+	return "/var/lib/remnamanager-node/install.log"
+}
+
 func (r *Real) runNodeAgent(ctx context.Context, j NodeJob, stage int) ([]byte, error) {
 	args, err := r.provisionSSHArgs(j, true)
 	if err != nil {
@@ -579,7 +603,7 @@ func (r *Real) runNodeAgent(ctx context.Context, j NodeJob, stage int) ([]byte, 
 	data, err := r.Runner.Run(ctx, []byte(input.String()), "ssh", args...)
 	if err != nil {
 		if actionErr := nodeAgentFailure(data); actionErr != nil {
-			return data, fmt.Errorf("%w: %w; remote log: /var/lib/remnamanager-node/install.log", actionErr, err)
+			return data, fmt.Errorf("%w: %w; remote log: %s", actionErr, err, nodeRemoteLog(j))
 		}
 		diagnostic := r.safeOutput(data)
 		for _, secret := range []string{j.Secret, j.RealityKey} {
@@ -592,8 +616,8 @@ func (r *Real) runNodeAgent(ctx context.Context, j NodeJob, stage int) ([]byte, 
 			diagnostic = string(runes[len(runes)-2000:])
 		}
 		detail := strings.TrimSpace(diagnostic)
-		if !strings.Contains(detail, "/var/lib/remnamanager-node/install.log") {
-			detail += "; remote log: /var/lib/remnamanager-node/install.log"
+		if !strings.Contains(detail, nodeRemoteLog(j)) {
+			detail += "; remote log: " + nodeRemoteLog(j)
 		}
 		return data, fmt.Errorf("%w; %s", err, detail)
 	}
@@ -604,7 +628,14 @@ func RenderNodeStack(j NodeJob) ([]byte, error) {
 	if image == "" {
 		image = "remnawave/node:latest"
 	}
-	return json.MarshalIndent(map[string]any{"name": "remnamanager-node", "services": map[string]any{"remnanode": map[string]any{"image": image, "restart": "unless-stopped", "network_mode": "host", "environment": map[string]string{"NODE_PORT": strconv.Itoa(nodeAPIPort(j.Params)), "SECRET_KEY": j.Secret}, "logging": map[string]any{"driver": "json-file", "options": map[string]string{"max-size": "10m", "max-file": "3"}}}}}, "", "  ")
+	node := map[string]any{"image": image, "restart": "unless-stopped", "network_mode": "host", "environment": map[string]string{"NODE_PORT": strconv.Itoa(nodeAPIPort(j.Params)), "SECRET_KEY": j.Secret}, "logging": map[string]any{"driver": "json-file", "options": map[string]string{"max-size": "10m", "max-file": "3"}}}
+	if j.CoreBinary != "" {
+		if !corePathPattern.MatchString(j.CoreBinary) {
+			return nil, errors.New("invalid Xray path")
+		}
+		node["volumes"] = []any{map[string]any{"type": "bind", "source": j.CoreBinary, "target": "/usr/local/bin/xray", "read_only": true}}
+	}
+	return json.MarshalIndent(map[string]any{"name": "remnamanager-node", "services": map[string]any{"remnanode": node}}, "", "  ")
 }
 func (r *Real) runNodeStage(ctx context.Context, j *NodeJob, stage int) error {
 	if j.DetailsPending {
@@ -746,6 +777,9 @@ func (r *Real) confirmNodeInstall(ctx context.Context, j *NodeJob) error {
 	if !j.RollbackAt.IsZero() && time.Until(j.RollbackAt) < 10*time.Second {
 		return services.LocalizedError("Время подтверждения SSH истекло. Правила откатываются автоматически. Продолжите эту ноду через «Незавершённые установки», чтобы запустить новую проверку.", "SSH confirmation expired. Rules roll back automatically. Resume this node from Pending installations to start a new trial.")
 	}
+	if err := r.checkFreshNodeSSH(ctx, *j); err != nil {
+		return fmt.Errorf("fresh SSH connection failed; firewall rollback remains armed: %w", err)
+	}
 	if err := r.waitInstalledNode(ctx, *j); err != nil {
 		return err
 	}
@@ -781,7 +815,18 @@ func (r *Real) waitInstalledNode(ctx context.Context, j NodeJob) error {
 	}
 }
 
-func (r *Real) waitNodeWebsite(ctx context.Context, j NodeJob) error {
+func (r *Real) waitNodeWebsite(ctx context.Context, j NodeJob, templates ...string) error {
+	expectedTitle := ""
+	if len(templates) > 0 {
+		index, err := nodeAssets.ReadFile("node_assets/sites/" + templates[0] + "/index.html")
+		if err != nil {
+			return err
+		}
+		expectedTitle = regexp.MustCompile(`<title>[^<]+</title>`).FindString(string(index))
+		if expectedTitle == "" {
+			return errors.New("website template has no title")
+		}
+	}
 	wait, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	client := http.Client{Timeout: 10 * time.Second, Transport: r.Client.Transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -801,7 +846,7 @@ func (r *Real) waitNodeWebsite(ctx context.Context, j NodeJob) error {
 				return readErr
 			}
 			if scheme == "https" {
-				if response.StatusCode != 200 || !strings.Contains(strings.ToLower(string(body)), "<html") {
+				if response.StatusCode != 200 || !strings.Contains(strings.ToLower(string(body)), "<html") || expectedTitle != "" && !strings.Contains(string(body), expectedTitle) {
 					return errors.New("HTTPS did not return the prepared website")
 				}
 			} else {
@@ -926,22 +971,38 @@ func (r *Real) ensureNodeProfile(ctx context.Context, j *NodeJob) error {
 		Name   string          `json:"name"`
 		Config json.RawMessage `json:"config"`
 	}
-	if json.Unmarshal(raw, &profile) != nil || profile.Name != name {
+	if json.Unmarshal(raw, &profile) != nil {
 		return errors.New("profile ownership changed")
 	}
 	var configString string
 	if json.Unmarshal(profile.Config, &configString) == nil {
 		profile.Config = json.RawMessage(configString)
 	}
-	wanted, _ := json.Marshal(nodeRealityConfig(*j))
-	var actual, expected any
-	json.Unmarshal(profile.Config, &actual)
-	json.Unmarshal(wanted, &expected)
-	// The API normalizes config formatting; compare decoded values, not bytes.
-	a, _ := json.Marshal(actual)
-	b, _ := json.Marshal(expected)
-	if string(a) != string(b) {
-		return errors.New("saved Reality profile was changed externally; refusing overwrite")
+	var actual struct {
+		Inbounds []json.RawMessage `json:"inbounds"`
+	}
+	if err := json.Unmarshal(profile.Config, &actual); err != nil {
+		return errors.New("invalid saved profile config")
+	}
+	wanted := nodeRealityConfig(*j)["inbounds"].([]any)[0]
+	expected, _ := json.Marshal(wanted)
+	matched := false
+	for _, inbound := range actual.Inbounds {
+		var item map[string]any
+		if json.Unmarshal(inbound, &item) != nil || item["tag"] != nodeInboundTag(*j) {
+			continue
+		}
+		var desired map[string]any
+		json.Unmarshal(expected, &desired)
+		a, _ := json.Marshal(item)
+		b, _ := json.Marshal(desired)
+		if string(a) != string(b) || matched {
+			return errors.New("managed Reality inbound changed externally; refusing overwrite")
+		}
+		matched = true
+	}
+	if !matched {
+		return errors.New("managed Reality inbound is missing")
 	}
 	inbounds, err := r.nodeObjects(ctx, "/config-profiles/"+j.ProfileUUID+"/inbounds", "inbounds")
 	if err != nil {
@@ -966,7 +1027,7 @@ func (r *Real) ensureNodeObjects(ctx context.Context, j *NodeJob) error {
 	if err := r.ensureNodeRegistration(ctx, j); err != nil {
 		return err
 	}
-	return r.ensureNodeHostAndSquad(ctx, j)
+	return r.ensureNodeHost(ctx, j)
 }
 func (r *Real) ensureNodeRegistration(ctx context.Context, j *NodeJob) error {
 	if !nodeUUIDPattern.MatchString(j.ProfileUUID) || !nodeUUIDPattern.MatchString(j.InboundUUID) {
@@ -1015,7 +1076,7 @@ func (r *Real) ensureNodeRegistration(ctx context.Context, j *NodeJob) error {
 	}
 	return nil
 }
-func (r *Real) ensureNodeHostAndSquad(ctx context.Context, j *NodeJob) error {
+func (r *Real) ensureNodeHost(ctx context.Context, j *NodeJob) error {
 	hosts, err := r.nodeObjects(ctx, "/hosts", "hosts")
 	if err != nil {
 		return err
@@ -1050,7 +1111,7 @@ func (r *Real) ensureNodeHostAndSquad(ctx context.Context, j *NodeJob) error {
 		if j.Version >= 2 {
 			fingerprint = "firefox"
 		}
-		raw, e := r.nodeAPI(ctx, "POST", "/hosts", map[string]any{"remark": j.Params.Name, "address": j.Params.Address, "port": 443, "sni": j.Params.Domain, "fingerprint": fingerprint, "nodes": []string{j.NodeUUID}, "inbound": map[string]string{"configProfileUuid": j.ProfileUUID, "configProfileInboundUuid": j.InboundUUID}})
+		raw, e := r.nodeAPI(ctx, "POST", "/hosts", map[string]any{"remark": nodeHostName(*j), "address": j.Params.Address, "port": 443, "sni": j.Params.Domain, "fingerprint": fingerprint, "nodes": []string{j.NodeUUID}, "inbound": map[string]string{"configProfileUuid": j.ProfileUUID, "configProfileInboundUuid": j.InboundUUID}})
 		if e != nil {
 			return e
 		}
@@ -1062,45 +1123,9 @@ func (r *Real) ensureNodeHostAndSquad(ctx context.Context, j *NodeJob) error {
 			return err
 		}
 	}
-	squads, err := r.nodeObjects(ctx, "/internal-squads", "internalSquads", "squads")
-	if err != nil {
-		return err
-	}
-	foundSquad := false
-	for _, squad := range squads {
-		if j.SquadUUID != "" && rawString(squad["uuid"]) == j.SquadUUID || j.SquadUUID == "" && rawString(squad["name"]) == "RM_"+j.ID[:16] {
-			if rawString(squad["name"]) != "RM_"+j.ID[:16] {
-				return errors.New("saved internal squad was changed externally")
-			}
-			j.SquadUUID = rawString(squad["uuid"])
-			foundSquad = true
-			break
-		}
-	}
-	if j.SquadUUID != "" && !foundSquad {
-		return errors.New("saved internal squad was deleted externally")
-	}
-	if j.SquadUUID == "" {
-		raw, e := r.nodeAPI(ctx, "POST", "/internal-squads", map[string]any{"name": "RM_" + j.ID[:16], "inbounds": []string{j.InboundUUID}})
-		if e != nil {
-			return e
-		}
-		j.SquadUUID, err = apiUUID(raw)
-		if err != nil {
-			return err
-		}
-	}
-	for _, id := range []string{j.NodeUUID, j.HostUUID, j.SquadUUID} {
+	for _, id := range []string{j.NodeUUID, j.HostUUID} {
 		if !nodeUUIDPattern.MatchString(id) {
 			return errors.New("API object has an invalid UUID")
-		}
-	}
-	// Validate membership as well as the name before adopting an existing squad.
-	for _, squad := range squads {
-		if rawString(squad["uuid"]) == j.SquadUUID {
-			if inbounds, ok := squad["inbounds"]; ok && !uuidInList(inbounds, j.InboundUUID) {
-				return errors.New("internal squad inbounds were changed externally")
-			}
 		}
 	}
 	return r.saveNodeJob(j)

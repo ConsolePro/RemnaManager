@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/ConsolePro/RemnaManager/internal/services"
 )
@@ -124,17 +125,47 @@ func nodeAPIPort(p services.NodeInstallParameters) int {
 }
 
 func nodeProfileName(j NodeJob) string {
+	if j.Version >= 4 {
+		p := j.Params
+		p.ProfileName = p.Name
+		return p.RealityProfileName()
+	}
+	if j.Version >= 3 {
+		return j.Params.RealityProfileName()
+	}
 	if j.Version >= 2 && j.Params.ProfileName != "" {
 		return j.Params.ProfileName
 	}
 	return "RM_" + j.ID[:16]
 }
+func nodeHostName(j NodeJob) string {
+	if j.Params.HostName != "" {
+		return nodeCountryHostPrefix(j) + j.Params.HostName
+	}
+	if j.Version >= 3 {
+		return nodeCountryHostPrefix(j) + nodeProfileName(j)
+	}
+	return nodeCountryHostPrefix(j) + j.Params.Name
+}
+
 func nodeInboundTag(j NodeJob) string {
+	if j.Version >= 3 {
+		return nodeProfileName(j)
+	}
 	if j.Version >= 2 {
 		return "VLESS_REALITY_" + strings.ReplaceAll(nodeProfileName(j), " ", "_")
 	}
 	return "RM_REALITY_" + j.ID[:12]
 }
+
+// ValidateNodeShortProfileName checks the panel's limit after adding the prefix.
+func ValidateNodeShortProfileName(p services.NodeInstallParameters) error {
+	if len(p.RealityProfileName()) > 30 {
+		return services.LocalizedError("Короткое имя профиля: максимум 16 символов (30 вместе с VLESS_REALITY_).", "Short profile name: at most 16 characters (30 including VLESS_REALITY_).")
+	}
+	return nil
+}
+
 func validateNodeDetails(p services.NodeInstallParameters) error {
 	port := nodeAPIPort(p)
 	if port < 1 || port > 65535 || port == 22 || port == 80 || port == 443 || port == 8443 || port == p.SSH.Port {
@@ -142,6 +173,9 @@ func validateNodeDetails(p services.NodeInstallParameters) error {
 	}
 	if p.ProfileName != "" && !regexp.MustCompile(`^[A-Za-z0-9_ -]{2,30}$`).MatchString(p.ProfileName) {
 		return services.LocalizedError("Имя профиля: 2–30 латинских букв, цифр, пробелов, дефисов или подчёркиваний.", "Profile name must contain 2–30 Latin letters, digits, spaces, hyphens or underscores.")
+	}
+	if p.HostName != "" && (strings.TrimSpace(p.HostName) == "" || len(utf16.Encode([]rune(p.HostName))) > 100 || strings.ContainsAny(p.HostName, "\r\n\t")) {
+		return services.LocalizedError("Название хоста: 1–100 символов без переводов строк и табуляции; эмодзи могут занимать два символа.", "Host name must contain 1–100 characters without line breaks or tabs; emoji may count as two characters.")
 	}
 	if p.CountryCode != "" && !ValidNodeCountry(p.CountryCode) {
 		return services.LocalizedError("Выберите страну из списка панели.", "Choose a country from the panel list.")
@@ -163,10 +197,24 @@ func prepareNewNodeSettings(j *NodeJob) error {
 		return nil
 	}
 	if !j.DetailsPending && j.Params.ProfileName == "" {
-		if regexp.MustCompile(`^[A-Za-z0-9_ -]{2,30}$`).MatchString(j.Params.Name) {
+		if regexp.MustCompile(`^[A-Za-z0-9_ -]{2,30}$`).MatchString(j.Params.Name) && (j.Version < 3 || len(j.Params.Name) <= 16) {
 			j.Params.ProfileName = j.Params.Name
 		} else {
 			j.Params.ProfileName = "Node_" + j.ID[:8]
+		}
+	}
+	if j.Version >= 4 && !j.DetailsPending {
+		j.Params.ProfileName = j.Params.Name
+		if err := validateNodeDetails(j.Params); err != nil {
+			return err
+		}
+		if len(utf16.Encode([]rune(nodeHostName(*j)))) > 100 {
+			return services.LocalizedError("Название хоста вместе с флагом и страной превышает 100 символов.", "Host name including country and flag exceeds 100 characters.")
+		}
+	}
+	if j.Version >= 3 && !j.DetailsPending {
+		if err := ValidateNodeShortProfileName(j.Params); err != nil {
+			return err
 		}
 	}
 	if len(j.ShortIDs) == 0 {

@@ -58,6 +58,9 @@ type frame struct {
 }
 
 type Model struct {
+	managerUpdater                                     managerUpdates
+	managerPlan                                        updater.Plan
+	managerApplied, restartRequested                   bool
 	ctx                                                context.Context
 	store                                              config.Store
 	cfg, draft                                         config.Config
@@ -162,6 +165,10 @@ func (m *Model) back() {
 	m.problem = ""
 	m.scroll = 0
 	switch m.screen {
+	case "managerInput", "managerConfirm", "managerProgress", "managerResult":
+		m.cancelInstall()
+		m.run++
+		m.screen = "menu"
 	case "nodeConnectInput", "nodeInstallInput", "nodeInstallPending", "nodeInstallResult":
 		m.cancelInstall()
 		m.run++
@@ -171,7 +178,7 @@ func (m *Model) back() {
 			m.prepareNodeDetails()
 			m.screen = "nodeDetailsInput"
 		} else {
-			m.screen = "nodesTrust"
+			m.screen = "nodeInstallPending"
 		}
 	case "nodeDetailsInput":
 		m.screen = "nodeInstallResult"
@@ -200,7 +207,7 @@ func (m *Model) back() {
 	case "nodesInput", "nodesResult":
 		m.screen = "nodesList"
 	case "nodesTrust":
-		if m.nodeAction == "node-update" || m.nodeAction == "node-reinstall" {
+		if m.nodeAction == "node-update" || m.nodeAction == "node-reinstall" || m.nodeAction == "node-core" {
 			m.screen = "nodesList"
 			break
 		}
@@ -221,8 +228,10 @@ func (m *Model) back() {
 			m.screen = "nodesInput"
 		}
 	case "nodesConfirm":
-		if m.nodeAction == "node-ssh" || m.nodeAction == "node-update" || m.nodeAction == "node-reinstall" {
-			m.screen = "nodesTrust"
+		if m.nodeAction == "node-ssh" || m.nodeAction == "node-update" || m.nodeAction == "node-reinstall" || m.nodeAction == "node-core" {
+			m.screen = "nodesList"
+		} else if m.nodeAction == "node-site" {
+			m.screen = "nodesInput"
 		} else if m.nodeAction == "node-rename" {
 			m.screen = "nodesInput"
 			m.inputs[0].Focus()
@@ -295,6 +304,8 @@ func (m *Model) back() {
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case managerUpdateMsg:
+		return m.receiveManagerUpdate(msg)
 	case nodeResultMsg:
 		return m.receiveNodeResult(msg)
 	case panelResultMsg:
@@ -456,6 +467,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.updateStatus = m.l("Проверка…", "Checking…")
 					return m, m.check()
 				default:
+					if strings.HasPrefix(selected.action, "manager-") {
+						return m.openManagerUpdate(selected.action)
+					}
 					if strings.HasPrefix(selected.action, "node") {
 						return m.openNodeOperation(selected)
 					}
@@ -468,6 +482,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "nodeConnectInput", "nodeDetailsInput", "nodeCountry", "nodeSite", "nodeInstallInput", "nodeInstallConfirm", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult", "nodeInstallPanelIP":
 			return m.updateNodeInstallScreen(msg)
+		case "managerInput", "managerConfirm", "managerResult":
+			return m.updateManagerScreen(msg)
 		case "nodesList", "nodesInput", "nodesTrust", "nodesConfirm", "nodesResult":
 			return m.updateNodeScreen(msg)
 		case "panelInput", "panelConfirm", "panelResult", "panelCustom", "panelProtection":
@@ -579,7 +595,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	if m.screen == "email" || m.screen == "domains" || m.screen == "panelInput" || m.screen == "nodesInput" || m.screen == "nodesTrust" || m.screen == "nodeInstallInput" || m.screen == "nodeInstallPanelIP" || m.screen == "nodeConnectInput" || m.screen == "nodeDetailsInput" || m.screen == "nodeCountry" {
+	if m.screen == "email" || m.screen == "domains" || m.screen == "panelInput" || m.screen == "nodesInput" || m.screen == "nodesTrust" || m.screen == "nodeInstallInput" || m.screen == "nodeInstallPanelIP" || m.screen == "nodeConnectInput" || m.screen == "nodeDetailsInput" || m.screen == "nodeCountry" || m.screen == "managerInput" {
 		var cmd tea.Cmd
 		m.inputs[m.focus], cmd = m.inputs[m.focus].Update(msg)
 		return m, cmd

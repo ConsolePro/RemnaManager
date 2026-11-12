@@ -10,10 +10,35 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/ConsolePro/RemnaManager/internal/services"
 	"golang.org/x/crypto/ssh"
 )
+
+func (r *Real) checkFreshNodeSSH(ctx context.Context, j NodeJob) error {
+	args, err := r.provisionSSHArgs(j, false)
+	if err != nil {
+		return err
+	}
+	args = append(args, "-T", "-o", "BatchMode=yes", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "IdentityAgent=none", "-o", "PreferredAuthentications=publickey", "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no", "root@"+j.Params.SSH.Host, "true")
+	_, err = r.Runner.Run(ctx, nil, "ssh", args...)
+	return err
+}
+
+func (r *Real) resetNodeManagedKey(j *NodeJob) error {
+	managed := filepath.Join(r.Root, "ssh", "keys", "node-"+j.ID)
+	if j.Params.SSH.IdentityFile == managed {
+		if err := noSymlinkParents(managed); err != nil {
+			return err
+		}
+		if err := os.Rename(managed, managed+".previous-"+fmt.Sprint(time.Now().UnixNano())); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	j.Params.SSH.IdentityFile = ""
+	return r.saveNodeJob(j)
+}
 
 func (r *Real) nodeManagedKey(j NodeJob) (string, string, error) {
 	if _, err := r.jobPath(j.ID); err != nil {
@@ -123,5 +148,15 @@ func (r *Real) installNodeManagedKey(ctx context.Context, j *NodeJob) error {
 		return services.LocalizedError("Ключ добавлен, но новый вход по нему не прошёл проверку. Проверьте, разрешён ли вход root по публичному ключу. Повтор установки использует тот же ключ.", "The key was added but a fresh key-only login failed. Check root public-key authentication. Retrying uses the same key.")
 	}
 	j.Params.SSH.IdentityFile = path
-	return r.saveNodeJob(j)
+	if err := r.saveNodeJob(j); err != nil {
+		return err
+	}
+	if j.NodeUUID != "" {
+		if r.state.NodeSSH == nil {
+			r.state.NodeSSH = map[string]services.NodeSSH{}
+		}
+		r.state.NodeSSH[j.NodeUUID] = j.Params.SSH
+		return saveState(statePath(r.Root), r.state)
+	}
+	return nil
 }

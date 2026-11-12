@@ -8,7 +8,7 @@ import (
 )
 
 func TestImagePinningDispatchesAgentStageTwoForBothJournalVersions(t *testing.T) {
-	for _, version := range []int{1, 2} {
+	for _, version := range []int{1, 2, 3} {
 		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
 			r, runner := managementFixture(t)
 			j := provisionJob(t)
@@ -17,7 +17,7 @@ func TestImagePinningDispatchesAgentStageTwoForBothJournalVersions(t *testing.T)
 				t.Fatal(err)
 			}
 			logicalStage := 2
-			if version == 2 {
+			if version >= 2 {
 				logicalStage = 3
 			}
 			for stage := 0; stage < logicalStage; stage++ {

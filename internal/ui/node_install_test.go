@@ -31,7 +31,7 @@ func (f *provisionFake) ManageNodes(ctx context.Context, request services.NodeRe
 	case "node-install-create":
 		f.status = services.NodeInstallStatus{ID: strings.Repeat("a", 32), Params: request.Install, Completed: make([]bool, 9)}
 	case "node-install-connect-create":
-		f.status = services.NodeInstallStatus{Version: 2, DetailsPending: true, ID: strings.Repeat("a", 32), Params: request.Install, Completed: make([]bool, 9)}
+		f.status = services.NodeInstallStatus{Version: 4, DetailsPending: true, ID: strings.Repeat("a", 32), Params: request.Install, Completed: make([]bool, 9)}
 	case "node-install-details":
 		identity := f.status.Params.SSH
 		f.status.Params = request.Install
@@ -135,18 +135,11 @@ func TestNodeInstallWizardSavesBeforeAuthAndRequiresSSHCommit(t *testing.T) {
 	for range values {
 		cmd = press(&m, tea.KeyEnter)
 	}
-	next, _ = m.Update(cmd())
+	next, cmd = m.Update(cmd())
 	m = next.(Model)
-	if m.screen != "nodesTrust" || service.requests[0].Action != "node-install-connect-scan" {
-		t.Fatal(m.screen)
+	if m.screen != "nodesProgress" || service.requests[0].Action != "node-install-connect-scan" {
+		t.Fatal("unexpected first connection", m.screen)
 	}
-	// A first-time user can explicitly trust the displayed key instead of
-	// supplying a fingerprint they do not have. The backend still pins it.
-	press(&m, tea.KeyTab)
-	if !m.nodeTrustFirst {
-		t.Fatal("first-use trust unavailable")
-	}
-	cmd = press(&m, tea.KeyEnter)
 	next, cmd = m.Update(cmd())
 	m = next.(Model)
 	if service.requests[1].Action != "node-install-connect-create" || m.nodeInstallJob == nil {
@@ -164,11 +157,11 @@ func TestNodeInstallWizardSavesBeforeAuthAndRequiresSSHCommit(t *testing.T) {
 	if m.screen != "nodeDetailsInput" || service.requests[3].Action != "node-install-key" || service.status.Params.SSH.IdentityFile == "" {
 		t.Fatal("details shown before key verification", m.screen)
 	}
-	details := []string{"New_Node", "DE", "New_Node_Profile", "3333", "cover.example.test", "studio", "192.0.2.20"}
+	details := []string{"New_Node", "DE", "New_Node_Profile", "3333", "cover.example.test", "studio", "192.0.2.20", "Finland 🇫🇮"}
 	for i, value := range details {
 		m.inputs[i].SetValue(value)
 	}
-	for range len(details) - 1 {
+	for range len(details) - 2 {
 		press(&m, tea.KeyTab)
 	}
 	if cmd = press(&m, tea.KeyEnter); cmd != nil || m.screen != "nodeInstallConfirm" {
@@ -179,15 +172,9 @@ func TestNodeInstallWizardSavesBeforeAuthAndRequiresSSHCommit(t *testing.T) {
 		next, cmd = m.Update(cmd())
 		m = next.(Model)
 	}
-	if m.screen != "nodeInstallVerify" || service.status.Ready || !service.status.FirewallPending {
-		t.Fatal("firewall was committed without verification", m.screen)
-	}
-	if service.status.Params.CountryCode != "DE" || service.status.Params.APIPort != 3333 || service.status.Params.ProfileName != "New_Node_Profile" {
+	if service.status.Params.CountryCode != "DE" || service.status.Params.APIPort != 3333 || service.status.Params.ProfileName != "New_Node" || service.status.Params.HostName != details[7] {
 		t.Fatal("details lost")
 	}
-	cmd = press(&m, tea.KeyEnter)
-	next, _ = m.Update(cmd())
-	m = next.(Model)
 	if m.screen != "nodeInstallResult" || !m.nodeInstallJob.Ready || service.requests[len(service.requests)-1].Action != "node-install-confirm" {
 		t.Fatal("firewall confirmation lost")
 	}
@@ -209,7 +196,7 @@ func TestPendingNodeInstallLoadsAndRescansInsteadOfCreating(t *testing.T) {
 	m = next.(Model)
 	next, _ = m.Update(cmd())
 	m = next.(Model)
-	if m.screen != "nodesTrust" || m.nodeInstallJob.ID != service.status.ID {
+	if m.screen != "nodesProgress" || m.nodeInstallJob.ID != service.status.ID {
 		t.Fatal("pending journal was not loaded")
 	}
 	for _, request := range service.requests {
@@ -218,8 +205,8 @@ func TestPendingNodeInstallLoadsAndRescansInsteadOfCreating(t *testing.T) {
 		}
 	}
 	press(&m, tea.KeyEsc)
-	if m.screen != "nodeInstallPending" {
-		t.Fatal("resume back navigation lost the pending list")
+	if m.screen != "menu" {
+		t.Fatal("resume back navigation did not leave safely")
 	}
 }
 

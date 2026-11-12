@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ConsolePro/RemnaManager/internal/system/stats"
+	"github.com/ConsolePro/RemnaManager/internal/updater"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
@@ -18,7 +19,7 @@ func TestServerTimeAndUptime(t *testing.T) {
 	m.lastStats = now.Add(-2 * time.Second)
 	m.stats.Uptime = 90060
 	header := ansi.Strip(m.serverHeader(now))
-	for _, want := range []string{"REMNA MANAGER", "10.11.2026 05:42:48 YEKT", "Аптайм: 1 д 01:01:02", "v1.0.0", "Remnawave"} {
+	for _, want := range []string{"REMNA MANAGER", "10.11.2026 05:42:48 YEKT", "Аптайм: 1 д 01:01:02", updater.Version, "Remnawave"} {
 		if !strings.Contains(header, want) {
 			t.Fatalf("missing %q: %s", want, header)
 		}
@@ -30,7 +31,7 @@ func TestServerTimeAndUptime(t *testing.T) {
 	if !strings.Contains(later, "05:42:49") || !strings.Contains(later, "01:01:03") {
 		t.Fatal("clock and server uptime did not advance", later)
 	}
-	if strings.Index(header, "v1.0.0") < strings.Index(header, "Аптайм") {
+	if strings.Index(header, updater.Version) < strings.Index(header, "Аптайм") {
 		t.Fatal("version must appear below server time and uptime")
 	}
 }

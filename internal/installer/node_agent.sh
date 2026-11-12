@@ -2,8 +2,12 @@ set -Eeuo pipefail
 umask 077
 [[ ${RM_JOB_ID:-} =~ ^[a-f0-9]{32}$ && ${RM_STAGE:-} =~ ^[0-8]$ ]] || exit 2
 [[ $(id -u) == 0 && -f /etc/os-release && -d /run/systemd/system ]] || { echo 'Linux root and systemd are required.' >&2; exit 1; }
-root=/var/lib/remnamanager-node
 stack=/opt/remnanode
+root=/var/lib/remnamanager-node
+if [[ ${RM_NODE_VERSION:-1} == 4 || -f $stack/state/job-id ]]; then
+    root=$stack/state
+    [[ ! -d $stack || -f $root/job-id ]] || { echo "Existing node directory requires migration." >&2; exit 1; }
+fi
 table=remnamanager_node
 unit=remnamanager-node-firewall
 rollback=remnamanager-node-rollback
@@ -16,6 +20,8 @@ api_port=2222
 if [[ -n ${RM_API_PORT_B64:-} ]]; then api_port=$(decode "$RM_API_PORT_B64"); fi
 [[ $api_port =~ ^[0-9]+$ ]] && ((api_port>0 && api_port<=65535 && api_port!=22 && api_port!=80 && api_port!=443 && api_port!=8443)) || exit 2
 node_version=${RM_NODE_VERSION:-1}
+# Journal v3 changes panel naming only; remote provisioning uses v2.
+[[ $node_version != 3 && $node_version != 4 ]] || node_version=2
 [[ $node_version == 1 || $node_version == 2 ]] || exit 2
 [[ $domain =~ ^[a-z0-9][a-z0-9.-]+[a-z0-9]$ && $panel_ip =~ ^[a-fA-F0-9:.]+$ ]] || exit 2
 if [[ -f $root/job-id ]]; then
@@ -135,7 +141,7 @@ case $RM_STAGE in
     ssh_ports >/dev/null
     getent ahosts "$domain" >/dev/null
     if [[ ! -f $root/preflight-ok ]]; then
-        [[ ! -e $stack && ! -e /etc/nginx && ! -e /etc/caddy && ! -e /etc/apache2 && ! -e /etc/systemd/system/$unit.service ]] || { echo 'Existing node/proxy configuration requires migration.' >&4; exit 1; }
+        [[ ! -e $stack/compose.json && ! -e /etc/nginx && ! -e /etc/caddy && ! -e /etc/apache2 && ! -e /etc/systemd/system/$unit.service ]] || { echo 'Existing node/proxy configuration requires migration.' >&4; exit 1; }
         command -v ss >/dev/null
         listeners=$(ss -H -ltn)
         if awk '{print $4}' <<<"$listeners" | grep -Eq ":(80|443|8443|$api_port)$"; then echo 'Reserved node ports are already in use.' >&4; exit 1; fi
@@ -164,23 +170,23 @@ case $RM_STAGE in
 3)
     action firewall
     check_firewall
-    [[ ! -e $stack || -f $stack/.remnamanager-go-node ]]
-    mkdir -p "$stack"; chmod 0700 "$stack"
+    [[ ! -e $stack || -f $stack/.remnamanager-go-node || ${RM_NODE_VERSION:-1} == 4 && -f $root/preflight-ok ]]
+    mkdir -p "$stack"; chmod 0755 "$stack"
     printf '%s\n' "$RM_JOB_ID" | write "$stack/.remnamanager-go-node"
     decode "$RM_COMPOSE_B64" | write "$stack/compose.json"
     action compose-config
     compose config --quiet
     # Restrict the node API before the host-network container can start.
     if [[ ! -f $root/firewall-active.nft ]]; then rules false | write "$root/firewall-active.nft"; fi
-    cat <<'EOF' | write "$root/firewall-apply.sh" 0700
-#!/bin/sh
+    { printf '#!/bin/sh\nRM_FIREWALL_FILE=%q\n' "$root/firewall-active.nft"; cat <<'EOF'
 set -eu
 table=remnamanager_node
-file=/var/lib/remnamanager-node/firewall-active.nft
+file=$RM_FIREWALL_FILE
 if /usr/sbin/nft list table inet "$table" >/dev/null 2>&1; then
  { echo "delete table inet $table"; cat "$file"; } | /usr/sbin/nft -f -
 else /usr/sbin/nft -f "$file"; fi
 EOF
+    } | write "$root/firewall-apply.sh" 0700
     cat <<EOF | write "/etc/systemd/system/$unit.service" 0644
 [Unit]
 Description=RemnaManager node firewall
@@ -199,6 +205,7 @@ EOF
     systemctl daemon-reload; systemctl enable "$unit.service"
     action site-files
     web=/var/www/remnamanager-node
+    if [[ $root == "$stack/state" ]]; then web=$stack/www; fi
     install -d -m 0755 "$web" "$web/site" "$web/acme" "$web/acme/.well-known" "$web/acme/.well-known/acme-challenge"
     if [[ $node_version == 2 ]]; then
         [[ -n ${RM_SITE_B64:-} ]]
@@ -210,6 +217,11 @@ EOF
     fi
     if [[ -L /etc/nginx/sites-enabled/default && $(readlink -f /etc/nginx/sites-enabled/default) == /etc/nginx/sites-available/default ]]; then rm /etc/nginx/sites-enabled/default; fi
     conf=/etc/nginx/conf.d/remnamanager-node.conf
+    if [[ $root == "$stack/state" ]]; then
+        conf=$stack/nginx/node.conf
+        mkdir -p "$stack/nginx"
+        ln -sfn "$conf" /etc/nginx/conf.d/remnamanager-node.conf
+    fi
     [[ ! -f $conf ]] || cp "$conf" "$root/nginx.previous"
     cat <<EOF | write "$conf" 0644
 # Managed by RemnaManager node installer

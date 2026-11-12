@@ -13,7 +13,8 @@ import (
 	"time"
 )
 
-const Version = "v1.0.0"
+var Version = "v1.2.0"
+
 const Endpoint = "https://api.github.com/repos/ConsolePro/RemnaManager/releases/latest"
 
 type Result struct {

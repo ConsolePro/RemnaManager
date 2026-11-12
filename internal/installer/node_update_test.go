@@ -50,6 +50,7 @@ func updateFixture(t *testing.T) (*Real, *managementRunner, NodeJob) {
 	r, runner := managementFixture(t)
 	j := provisionJob(t)
 	j.NodeUUID = testNodeUUID
+	j.Params.SSH.IdentityFile = r.Root + "/managed-node-key"
 	j.Ready = true
 	for i := 0; i < 9; i++ {
 		j.Completed[i] = true

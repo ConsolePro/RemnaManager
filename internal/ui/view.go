@@ -15,6 +15,8 @@ var failure = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 
 func (m Model) body() string {
 	switch m.screen {
+	case "managerInput", "managerConfirm", "managerProgress", "managerResult":
+		return m.managerUpdateView()
 	case "nodeConnectInput", "nodeDetailsInput", "nodeCountry", "nodeSite", "nodeInstallInput", "nodeInstallConfirm", "nodeInstallProgress", "nodeInstallVerify", "nodeInstallPending", "nodeInstallResult", "nodeInstallPanelIP":
 		return m.nodeInstallView()
 	case "menu":
@@ -222,6 +224,9 @@ func (m Model) View() string {
 		cursor := 3 + m.focus*2
 		if m.screen != "nodeInstallInput" {
 			cursor += 2
+		}
+		if m.screen == "nodeDetailsInput" && m.nodeInstallJob != nil && m.nodeInstallJob.Version >= 4 && m.focus > 2 {
+			cursor -= 2
 		}
 		if cursor >= vp.YOffset+vp.Height {
 			vp.SetYOffset(cursor - vp.Height + 1)

@@ -54,25 +54,20 @@ func (m Model) receiveNodeInstall(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 		m.nodeSSH = msg.result.SSH
 		m.nodeFingerprint = msg.result.Fingerprint
 		m.nodeSSHChanged = msg.result.HostKeyChanged
-		if msg.action == "node-install-rescan" && m.nodeInstallJob != nil && m.nodeInstallJob.Version >= 2 && !m.nodeSSHChanged {
-			if m.nodeInstallJob.DetailsPending {
-				return m.startNodeRequest(services.NodeRequest{Action: "node-install-auth", JobID: m.nodeInstallJob.ID, Fingerprint: m.nodeFingerprint})
-			}
-			m.screen = "nodeInstallConfirm"
-			return m, nil
+		if msg.action == "node-install-rescan" {
+			return m.startNodeRequest(services.NodeRequest{Action: "node-install-auth", JobID: m.nodeInstallJob.ID})
 		}
-		m.inputs = []textinput.Model{newInput("SHA256:…", "")}
-		m.inputs[0].Width = max(1, min(60, m.width-12))
-		m.inputs[0].CharLimit = 128
-		m.focus = 0
-		m.screen = "nodesTrust"
-		return m, m.inputs[0].Focus()
+		if m.nodeConnectWizard && m.nodeInstallJob == nil {
+			return m.startNodeRequest(services.NodeRequest{Action: "node-install-connect-create", Install: m.nodeInstallParams, Fingerprint: m.nodeFingerprint})
+		}
+		m.screen = "nodeInstallConfirm"
+		return m, nil
 	case "node-install-load":
 		m.nodeConnectWizard = m.nodeInstallJob.Version >= 2
 		return m.startNodeRequest(services.NodeRequest{Action: "node-install-rescan", JobID: m.nodeInstallJob.ID})
 	case "node-install-connect-create", "node-install-create":
 		return m.startNodeRequest(services.NodeRequest{Action: "node-install-auth", JobID: m.nodeInstallJob.ID, Fingerprint: m.nodeFingerprint})
-	case "node-install-authenticated":
+	case "node-install-auth", "node-install-authenticated":
 		return m.startNodeRequest(services.NodeRequest{Action: "node-install-key", JobID: m.nodeInstallJob.ID})
 	case "node-install-key":
 		if m.nodeInstallJob.DetailsPending {
@@ -95,10 +90,10 @@ func (m Model) receiveNodeInstall(msg nodeResultMsg) (tea.Model, tea.Cmd) {
 			m.nodeInstallStage++
 			return m.startNodeRequest(services.NodeRequest{Action: "node-install-step", JobID: m.nodeInstallJob.ID, Stage: m.nodeInstallStage})
 		}
-		m.screen = "nodeInstallVerify"
+		return m.startNodeRequest(services.NodeRequest{Action: "node-install-confirm", JobID: m.nodeInstallJob.ID})
 	case "node-install-confirm":
 		m.screen = "nodeInstallResult"
-		m.panelResult = m.l("Нода подключена, firewall сохранён.\nПрофиль Reality, хост подписки и internal squad созданы.\nНазначьте squad пользователям в панели.", "Node connected and firewall committed.\nReality profile, subscription host and internal squad created.\nAssign the squad to users in the panel.")
+		m.panelResult = m.l("Нода подключена, новое SSH-соединение проверено, firewall сохранён.\nПрофиль Reality и хост подписки созданы.\nСквады настройте вручную в панели.", "Node connected, fresh SSH connection verified, firewall committed.\nReality profile and subscription host created.\nConfigure squads manually in the panel.")
 	}
 	return m, nil
 }
@@ -236,6 +231,23 @@ func (m Model) nodeInstallView() string {
 			apiPort = 2222
 		}
 		if m.nodeConnectWizard {
+			if m.nodeInstallJob != nil && m.nodeInstallJob.Version >= 4 {
+				p.ProfileName = p.Name
+			}
+			if m.nodeInstallJob == nil || m.nodeInstallJob.Version >= 3 {
+				p.ProfileName = p.RealityProfileName()
+			}
+			hostName := p.HostName
+			if hostName == "" {
+				hostName = p.ProfileName
+				if m.nodeInstallJob != nil && m.nodeInstallJob.Version < 3 {
+					hostName = p.Name
+				}
+			}
+			if m.nodeInstallJob != nil && m.nodeInstallJob.Version >= 4 {
+				hostName = installer.NodeCountryHostPrefix(p.CountryCode, p.HostLanguage) + hostName
+			}
+			text += fmt.Sprintf("%s: %s\n", m.l("Хост подписки", "Subscription host"), hostName)
 			text += fmt.Sprintf("%s: %s\n%s: %s\nAPI: %d\n%s: %s\n\n", m.l("Страна", "Country"), p.CountryCode, m.l("Профиль", "Profile"), p.ProfileName, apiPort, m.l("Шаблон сайта", "Website template"), p.SiteTemplate)
 		}
 		if m.nodeInstallJob != nil {
@@ -244,7 +256,7 @@ func (m Model) nodeInstallView() string {
 		if p.SSH.IdentityFile == "" {
 			text += m.l("Вход: root по паролю. Пароль вводится в OpenSSH и не сохраняется.\nПосле входа будет создан и проверен отдельный SSH-ключ для ноды.\n\n", "Login: root password, entered in OpenSSH and never saved.\nA dedicated SSH key will then be created and verified for this node.\n\n")
 		}
-		return text + warning.Render(fmt.Sprintf(m.l("Будут установлены Docker, Nginx, сертификат и Remnawave Node.\nСначала профиль и нода в панели, после запуска — хост Firefox и squad.\nОткрытые порты: SSH, TCP 80/443 и API %d только с IP панели.\nОстальные порты закроются с таймером отката на 120 секунд.", "Docker, Nginx, a certificate and Remnawave Node will be installed.\nProfile and node are created first; Firefox host and squad follow startup.\nOpen ports: SSH, TCP 80/443 and API %d only from the panel IP.\nOther ports are blocked with a 120-second rollback timer."), apiPort)) + "\n\n" + m.l("Enter — начать / продолжить · Esc — назад", "Enter — install / resume · Esc — back")
+		return text + warning.Render(fmt.Sprintf(m.l("Будут установлены Docker, Nginx, сертификат и Remnawave Node.\nСоздаются профиль, нода и хост подписки; сквады настраиваются вручную.\nОткрытые порты: SSH, TCP 80/443 и API %d только с IP панели.\nПосле изменения firewall менеджер проверит новое SSH-соединение и сохранит правила.\nПри ошибке сработает откат через 120 секунд.", "Docker, Nginx, a certificate and Remnawave Node will be installed.\nProfile, node and subscription host are created; configure squads manually.\nOpen ports: SSH, TCP 80/443 and API %d only from the panel IP.\nA fresh SSH connection verifies and commits the firewall.\nFailure leaves the 120-second rollback active."), apiPort)) + "\n\n" + m.l("Enter — начать / продолжить · Esc — назад", "Enter — install / resume · Esc — back")
 	case "nodeInstallProgress":
 		version := 2
 		if m.nodeInstallJob != nil {
@@ -270,7 +282,7 @@ func (m Model) nodeInstallView() string {
 		}
 		return strings.Join(rows, "\n")
 	case "nodeInstallVerify":
-		text := title + "\n\n" + warning.Render(m.l("ПРОВЕРЬТЕ НОВОЕ SSH-ПОДКЛЮЧЕНИЕ К НОДЕ", "VERIFY A NEW SSH CONNECTION TO THE NODE")) + "\n\n" + m.l("Нода подключена к панели. Откройте вторую SSH-сессию к серверу ноды.\nEnter — подтвердить доступ и сохранить firewall.\nБез подтверждения прежние правила вернутся через 120 секунд.\nEsc — оставить автоматический откат.", "The node is connected. Open a second SSH session to the node server.\nEnter — confirm access and persist the firewall.\nWithout confirmation the previous rules return after 120 seconds.\nEsc — leave automatic rollback armed.")
+		text := title + "\n\n" + m.l("Проверка SSH после изменения firewall.\nEnter — повторить автоматическую проверку нового соединения.\nПри ошибке прежние правила вернутся по таймеру.", "Checking SSH after the firewall change.\nEnter — retry automatic verification with a fresh connection.\nFailure leaves the rollback timer armed.")
 		if m.nodeInstallJob != nil && !m.nodeInstallJob.RollbackAt.IsZero() {
 			text += fmt.Sprintf(m.l("\n\nДо отката примерно %d сек.", "\n\nRollback in approximately %d seconds."), max(0, int(time.Until(m.nodeInstallJob.RollbackAt).Seconds())))
 		}

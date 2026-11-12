@@ -51,6 +51,9 @@ func (r *Real) manageNodeUpdate(ctx context.Context, request services.NodeReques
 	if err != nil {
 		return services.NodeResult{}, err
 	}
+	if j.CoreUpdateID != "" {
+		return services.NodeResult{}, errors.New("finish Xray update recovery first")
+	}
 	status := jobStatus(j)
 	result := services.NodeResult{Install: &status}
 	if node.Address != j.Params.Address {
@@ -62,7 +65,8 @@ func (r *Real) manageNodeUpdate(ctx context.Context, request services.NodeReques
 		if j.UpdateID == "" && (node.IsDisabled || !reinstall && !node.IsConnected) {
 			return result, errors.New("enable the node; updates also require an active panel connection")
 		}
-		result, err = r.nodeProvision(ctx, services.NodeRequest{Action: "node-install-rescan", JobID: j.ID})
+		result.SSH = j.Params.SSH
+		result.SSH.HostKey = ""
 		result.Text = j.Image
 		if j.UpdateID != "" {
 			result.Text += "\nRecovery of an interrupted update is required."
@@ -72,6 +76,16 @@ func (r *Real) manageNodeUpdate(ctx context.Context, request services.NodeReques
 	case "node-update-auth", "node-reinstall-auth":
 		return r.nodeProvision(ctx, services.NodeRequest{Action: "node-install-auth", JobID: j.ID, Fingerprint: request.Fingerprint})
 	case "node-update-run", "node-reinstall-run":
+		if j.Params.SSH.IdentityFile == "" {
+			if err := r.installNodeManagedKey(ctx, &j); err != nil {
+				return result, err
+			}
+		}
+		if j.Version >= 2 && j.UpdateID == "" {
+			if err := r.ensureNodeLayout(ctx, &j); err != nil {
+				return result, err
+			}
+		}
 		if j.UpdateID != "" {
 			err = r.recoverNodeUpdate(ctx, &j)
 		} else {
@@ -111,7 +125,7 @@ func (r *Real) runNodeUpdateAgent(ctx context.Context, j NodeJob, action string)
 	input := fmt.Sprintf("set +x\nRM_JOB_ID='%s'\nRM_UPDATE_ID='%s'\nRM_UPDATE_ACTION='%s'\nRM_PREVIOUS_IMAGE='%s'\nRM_REINSTALL='%s'\n", j.ID, j.UpdateID, action, j.Image, mode)
 	data, err := r.Runner.Run(ctx, append([]byte(input), nodeUpdateAgent...), "ssh", args...)
 	if err != nil {
-		return "", "", fmt.Errorf("remote node update %s failed; inspect /var/lib/remnamanager-node/install.log: %w", action, err)
+		return "", "", fmt.Errorf("remote node update %s failed; inspect %s: %w", action, nodeRemoteLog(j), err)
 	}
 	phase, image := "", ""
 	for _, line := range strings.Split(string(data), "\n") {

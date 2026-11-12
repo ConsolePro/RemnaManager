@@ -16,9 +16,9 @@ func (m Model) serverHeader(now time.Time) string {
 	title := accent.Render("REMNA MANAGER")
 	tagline := m.l("Управляй инфраструктурой Remnawave легко", "Manage your Remnawave infrastructure with ease")
 	status := m.metricsStatus(now)
-	version := updater.Version + " · " + m.l("предварительная", "preview")
+	version := updater.Version + " · Go TUI"
 	if updater.Newer(m.latest, updater.Version) {
-		version += " · " + m.l("Доступна ", "Available ") + m.latest + " · " + m.l("Обновление: в разработке", "Update: in development")
+		version += " · " + m.l("Доступна ", "Available ") + m.latest + " · " + m.l("Версии и обновления", "Versions and updates")
 	}
 	uptime := "—"
 	if !m.lastStats.IsZero() && m.stats.Uptime > 0 {

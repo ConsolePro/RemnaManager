@@ -75,15 +75,18 @@ func TestNodeJournalPreservesKeysAndPublicStatusHidesSecrets(t *testing.T) {
 }
 
 func TestInterruptedProfileAndHostCreationReconcilesWithoutDuplicates(t *testing.T) {
-	for _, version := range []int{1, 2} {
-		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) { testInterruptedProfileAndHost(t, version) })
+	for _, version := range []int{1, 2, 3, 4} {
+		for _, host := range []string{"", "Finland 🇫🇮"} {
+			t.Run(fmt.Sprintf("v%d/host=%s", version, host), func(t *testing.T) { testInterruptedProfileAndHost(t, version, host) })
+		}
 	}
 }
-func testInterruptedProfileAndHost(t *testing.T, version int) {
+func testInterruptedProfileAndHost(t *testing.T, version int, hostName string) {
 	r, _ := managementFixture(t)
 	j := provisionJob(t)
 	j.Version = version
-	if version == 2 {
+	j.Params.HostName = hostName
+	if version >= 2 {
 		j.Params.CountryCode = "DE"
 		j.Params.APIPort = 3333
 		if err := prepareNewNodeSettings(&j); err != nil {
@@ -148,7 +151,7 @@ func testInterruptedProfileAndHost(t *testing.T, version int) {
 	if err := r.ensureNodeProfile(context.Background(), &j); err != nil {
 		t.Fatal("profile was not recovered", err)
 	}
-	if version == 2 {
+	if version >= 2 {
 		j.Completed[0] = true
 		if err := r.runNodeStage(context.Background(), &j, 1); err != nil {
 			t.Fatal("profile and node must be created before deployment", err)
@@ -169,17 +172,30 @@ func testInterruptedProfileAndHost(t *testing.T, version int) {
 	if err := r.ensureNodeObjects(context.Background(), &j); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/config-profiles", "/nodes", "/hosts", "/internal-squads"} {
+	for _, path := range []string{"/config-profiles", "/nodes", "/hosts"} {
 		if posts[path] != 1 {
 			t.Fatal("duplicate resource", path, posts[path])
 		}
 	}
-	if version == 2 {
+	if version >= 2 {
 		node := collections["/nodes"][0]
 		host := collections["/hosts"][0]
 		if node["port"] != float64(3333) || node["countryCode"] != "DE" || host["fingerprint"] != "firefox" {
 			t.Fatal("new node details missing", node, host)
 		}
+		if host["remark"] != nodeHostName(j) || collections["/config-profiles"][0]["name"] != nodeProfileName(j) {
+			t.Fatal("profile or host name was lost")
+		}
+	}
+	if posts["/internal-squads"] != 0 || j.SquadUUID != "" {
+		t.Fatal("squads must be managed manually")
+	}
+	profile := collections["/config-profiles"][0]
+	profile["name"] = "Shared_Profile"
+	config := profile["config"].(map[string]any)
+	config["inbounds"] = append(config["inbounds"].([]any), map[string]any{"tag": "OTHER_INBOUND", "port": 4443})
+	if err := r.ensureNodeProfile(context.Background(), &j); err != nil {
+		t.Fatal("renamed shared profile was rejected", err)
 	}
 	before := j.RealityKey
 	collections["/config-profiles"][0]["config"] = map[string]any{"changed": true}
@@ -324,4 +340,19 @@ func TestPanelIPDetectionAndConfirmation(t *testing.T) {
 	if _, err := r.nodeProvision(context.Background(), request); err == nil {
 		t.Fatal("changed firewall source after installation started")
 	}
+}
+
+// Test users need a manually assigned squad, just like users configured in the panel.
+func createManualTestSquad(t *testing.T, r *Real, j NodeJob) string {
+	t.Helper()
+	raw, err := r.nodeAPI(context.Background(), "POST", "/internal-squads", map[string]any{"name": "Test_Manual_" + time.Now().Format("150405"), "inbounds": []string{j.InboundUUID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := apiUUID(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = r.nodeAPI(context.Background(), "DELETE", "/internal-squads/"+id, nil) })
+	return id
 }

@@ -51,6 +51,59 @@ func TestNodeV2TemplateAndStableGeneratedSettings(t *testing.T) {
 	}
 }
 
+func TestNodeProfileAndHostNamesRespectJournalVersion(t *testing.T) {
+	for _, version := range []int{2, 3} {
+		j := provisionJob(t)
+		j.Version = version
+		j.Params.ProfileName = "FN1001"
+		profile, host := "FN1001", j.Params.Name
+		if version == 3 {
+			profile, host = "VLESS_REALITY_FN1001", "VLESS_REALITY_FN1001"
+		}
+		if nodeProfileName(j) != profile || nodeInboundTag(j) != "VLESS_REALITY_FN1001" || nodeHostName(j) != host {
+			t.Fatal("incorrect profile, tag or default host", version)
+		}
+		j.Params.HostName = "Finland 🇫🇮"
+		if nodeHostName(j) != j.Params.HostName {
+			t.Fatal("custom host name lost")
+		}
+		if err := prepareNewNodeSettings(&j); err != nil {
+			t.Fatal(err)
+		}
+		r, _ := managementFixture(t)
+		if err := r.saveNodeJob(&j); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := r.loadNodeJob(j.ID)
+		if err != nil || nodeProfileName(loaded) != profile || nodeHostName(loaded) != j.Params.HostName {
+			t.Fatal("names changed after resume", err)
+		}
+	}
+}
+
+func TestNodeNamesFitPanelLimits(t *testing.T) {
+	for _, name := range []string{"FN1001", strings.Repeat("A", 16), "VLESS_REALITY_FN1001"} {
+		if err := ValidateNodeShortProfileName(services.NodeInstallParameters{ProfileName: name}); err != nil {
+			t.Fatal("valid short name rejected", name, err)
+		}
+	}
+	if err := ValidateNodeShortProfileName(services.NodeInstallParameters{ProfileName: strings.Repeat("A", 17)}); err == nil {
+		t.Fatal("oversized profile accepted")
+	}
+	j := provisionJob(t)
+	j.Version = 3
+	j.Params.ProfileName = strings.Repeat("A", 17)
+	if err := prepareNewNodeSettings(&j); err == nil {
+		t.Fatal("backend accepted oversized profile")
+	}
+	for _, host := range []string{strings.Repeat("A", 101), strings.Repeat("😀", 51), "\n", "host\tname"} {
+		j.Params.HostName = host
+		if err := validateNodeDetails(j.Params); err == nil {
+			t.Fatal("invalid host accepted", host)
+		}
+	}
+}
+
 func TestPreparedNodeWebsitesHaveLocalWorkingPages(t *testing.T) {
 	for _, name := range NodeSiteTemplates {
 		data, err := nodeWebsiteArchive(name)

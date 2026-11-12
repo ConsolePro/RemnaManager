@@ -51,12 +51,11 @@ func TestNodeReinstallPreservesPinnedImageAndKeys(t *testing.T) {
 
 func TestNodeReinstallOfflineAndInterruptedRecovery(t *testing.T) {
 	r, runner, j := updateFixture(t)
-	// Reinstall may repair an offline node. Preparation still scans the pinned
-	// SSH key; unlike an update it does not require a live panel connection.
+	// Preparation uses the saved SSH settings without an unnecessary connection.
 	runner.response = func(_ string, _ []byte) ([]byte, error) { return nil, errors.New("SSH_SCAN_REACHED") }
 	node := services.Node{UUID: j.NodeUUID, Address: j.Params.Address}
 	_, err := r.manageNodeUpdate(context.Background(), services.NodeRequest{Action: "node-reinstall-prepare"}, node)
-	if err == nil || !strings.Contains(err.Error(), "SSH_SCAN_REACHED") {
+	if err != nil {
 		t.Fatal("offline reinstall was blocked before SSH", err)
 	}
 	if _, err := r.manageNodeUpdate(context.Background(), services.NodeRequest{Action: "node-update-prepare"}, node); err == nil || strings.Contains(err.Error(), "SSH_SCAN_REACHED") {

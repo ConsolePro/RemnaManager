@@ -12,6 +12,15 @@ jobs:
       - run: go test ./...
       - run: go vet ./...
       - run: bash -n install.sh
+      - name: Verify remote update transactions
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq shellcheck
+          shellcheck --shell=bash internal/installer/node_agent.sh internal/installer/node_update_agent.sh internal/installer/node_site_agent.sh internal/installer/node_layout_agent.sh internal/installer/node_core_agent.sh
+          python3 tests/node-files-fixture.py
+          python3 tests/node-core-fixture.py --jq /usr/bin/jq
+          mkdir -p .test-state
+          go build -ldflags "-X github.com/ConsolePro/RemnaManager/internal/updater.Version=v$(cat VERSION)" -o .test-state/installer-fixture-manager ./cmd/remna
+          python3 tests/binary-install-fixture.py --binary .test-state/installer-fixture-manager --jq /usr/bin/jq
   go-installer:
     runs-on: ubuntu-latest
     strategy:

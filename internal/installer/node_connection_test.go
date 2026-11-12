@@ -26,7 +26,7 @@ func TestNodeConnectionDraftNeedsNoNameDomainOrAPIObjects(t *testing.T) {
 	// No test API server is configured: this action must not access /nodes,
 	// profiles or keygen before root login and entering the actual details.
 	result, err := r.nodeProvision(context.Background(), services.NodeRequest{Action: "node-install-connect-create", Fingerprint: fingerprint, Install: services.NodeInstallParameters{SSH: services.NodeSSH{Host: "node.example.test", Port: 22}}})
-	if err != nil || result.Install == nil || !result.Install.DetailsPending || result.Install.Version != 2 {
+	if err != nil || result.Install == nil || !result.Install.DetailsPending || result.Install.Version != 4 {
 		t.Fatal(result, err)
 	}
 	j, err := r.loadNodeJob(result.Install.ID)

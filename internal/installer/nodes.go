@@ -103,6 +103,41 @@ func (r *Real) manageNodes(ctx context.Context, request services.NodeRequest) (s
 		return result, errors.New("unexpected node detail response")
 	}
 	request.UUID = node.UUID
+	if strings.HasPrefix(request.Action, "node-core-") {
+		return r.manageNodeCore(ctx, request, node)
+	}
+	if strings.HasPrefix(request.Action, "node-site-") {
+		return r.manageNodeSite(ctx, request, node)
+	}
+	if request.Action == "node-ssh-auth" {
+		j, err := r.installedNodeJob(node.UUID)
+		if err != nil {
+			result.NeedsSSHSettings = true
+			result.SSH = r.state.NodeSSH[node.UUID]
+			if result.SSH.Host == "" {
+				result.SSH.Host, result.SSH.Port = node.Address, 22
+			}
+			result.SSH.HostKey = ""
+			return result, nil
+		}
+		return r.nodeProvision(ctx, services.NodeRequest{Action: "node-install-auth", JobID: j.ID})
+	}
+	if request.Action == "node-ssh-open" {
+		j, err := r.installedNodeJob(node.UUID)
+		if err != nil {
+			return result, err
+		}
+		if err := r.installNodeManagedKey(ctx, &j); err != nil {
+			return result, err
+		}
+		args, err := r.provisionSSHArgs(j, false)
+		if err != nil {
+			return result, err
+		}
+		args = append(args, "-t", "root@"+j.Params.SSH.Host)
+		result.Command = append([]string{"ssh"}, args...)
+		return result, nil
+	}
 	if strings.HasPrefix(request.Action, "node-update-") || strings.HasPrefix(request.Action, "node-reinstall-") {
 		return r.manageNodeUpdate(ctx, request, node)
 	}

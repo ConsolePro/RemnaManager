@@ -1,0 +1,45 @@
+name: Go release binaries
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test and build static Linux executables
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(cat VERSION)" = "${RELEASE_TAG#v}"
+          go test ./...
+          go vet ./...
+          mkdir release
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -mod=readonly -trimpath \
+              -ldflags "-s -w -X github.com/ConsolePro/RemnaManager/internal/updater.Version=$RELEASE_TAG" \
+              -o "release/remanager-linux-$arch" ./cmd/remna
+          done
+          cp install.sh release/install.sh
+          cd release
+          sha256sum remanager-linux-* install.sh > checksums.txt
+      - name: Verify the binary installer before uploading
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq shellcheck
+          shellcheck -x install.sh
+          python3 tests/binary-install-fixture.py --binary release/remanager-linux-amd64 --jq /usr/bin/jq
+      - name: Upload assets to a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --draft --title "$RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" release/*
