@@ -51,7 +51,7 @@ restore() {
     if [[ -d $web && ! -e $old_web ]]; then mv -- "$web" "$old_web"; fi
     if [[ -d $root && ! -e $old_root ]]; then mv -- "$root" "$old_root"; fi
     systemctl daemon-reload || true
-    nginx -t && systemctl reload nginx || true
+    if nginx -t; then systemctl reload nginx || true; fi
     systemctl start remnamanager-node-acme.timer || true
     exit "$status"
 }
