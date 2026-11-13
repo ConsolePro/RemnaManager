@@ -12,7 +12,14 @@ type PanelParameters struct {
 	PanelDomain, SubscriptionDomain string
 	Proxy, Email, Admin             string
 	Protection, AuthDomain          string
+	CertificateAuthority            string
 	SSHPorts                        []int
+	RemoteSubscription              *SubscriptionRemote `json:",omitempty"`
+}
+
+type SubscriptionRemote struct {
+	SSH         NodeSSH
+	User, Proxy string
 }
 
 // LivePanelInstaller adds the host-changing installation lifecycle to the demo
@@ -34,11 +41,17 @@ type PanelInstaller interface {
 type PanelRequest struct {
 	Action, Value string
 	Protection    string
+	Remote        SubscriptionRemote
+	Fingerprint   string
+	DeleteBackups bool
 }
 
 type PanelResult struct {
-	Text   string
-	TextRU string
+	Remote       SubscriptionRemote
+	Fingerprint  string
+	Installation string
+	Text         string
+	TextRU       string
 	// Command is an interactive process, launched only after explicit selection.
 	Command []string
 }

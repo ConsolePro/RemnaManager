@@ -160,7 +160,10 @@ func (r *Real) bootstrap(ctx context.Context) error {
 			return err
 		}
 	}
-	return writeFile(r.Stack+"/subscription.env", renderSubEnv(*s), 0600)
+	if s.Params.RemoteSubscription != nil {
+		return nil
+	}
+	return writeFile(r.subEnvPath(), renderSubEnv(*s), 0600)
 }
 
 func (r *Real) waitAPI(ctx context.Context) error {
@@ -200,6 +203,10 @@ func (r *Real) waitHTTPS(ctx context.Context) error {
 		conn, err := dialer.DialContext(wait, "tcp", net.JoinHostPort(r.state.Params.SubscriptionDomain, "443"))
 		if err == nil {
 			conn.Close()
+			if r.state.Params.RemoteSubscription != nil {
+				_, err = r.remoteSubscription(wait, "check", "")
+				return err
+			}
 			return nil
 		}
 		select {

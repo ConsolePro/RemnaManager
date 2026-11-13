@@ -209,6 +209,9 @@ func (r *Real) startProtection(ctx context.Context) error {
 
 func (r *Real) panelServices() []string {
 	names := []string{"remnawave", "subscription", "remnawave-db", "remnawave-redis"}
+	if r.state.Params.RemoteSubscription != nil || r.state.LayoutVersion >= 1 {
+		names = []string{"remnawave", "remnawave-db", "remnawave-redis"}
+	}
 	if service := protectionService(r.state.Params); service != "" {
 		names = append(names, service)
 	}
@@ -216,6 +219,9 @@ func (r *Real) panelServices() []string {
 }
 
 func (r *Real) changeProtection(ctx context.Context, mode, domain string) error {
+	if r.state.ProxyRuntime == "docker" {
+		return r.changeDockerProtection(ctx, mode, domain)
+	}
 	p := r.state.Params
 	p.Protection, p.AuthDomain = mode, strings.ToLower(strings.TrimSpace(domain))
 	if err := ValidateParameters(p); err != nil {

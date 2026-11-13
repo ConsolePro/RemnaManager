@@ -192,10 +192,13 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 				return e
 			}
 			s.NodeSSH = nodeSSH
+			s.ProxyRuntime = "docker"
+			s.LayoutVersion = officialLayout
 			s.BackendTag = "3.4.9"
 		} else {
 			comparison := s.Params
 			comparison.Email = p.Email
+			comparison.CertificateAuthority = p.CertificateAuthority
 			comparison.SSHPorts = p.SSHPorts
 			if s.Params.Protection == "" {
 				comparison.Protection, comparison.AuthDomain = p.Protection, p.AuthDomain
@@ -204,7 +207,7 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 			if !reflect.DeepEqual(comparison, p) {
 				return errors.New("resume with the saved domains, proxy and administrator; migration is not an overwrite")
 			}
-			if s.Params.Email != p.Email {
+			if s.Params.Email != p.Email || s.Params.CertificateAuthority != p.CertificateAuthority {
 				s.Completed[6] = false
 			}
 			if !reflect.DeepEqual(s.Params.SSHPorts, p.SSHPorts) {
@@ -224,7 +227,7 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 			r.log = f
 			r.LogPath = f.Name()
 			if _, ok := r.Runner.(ExecRunner); ok {
-				r.Runner = ExecRunner{Log: f}
+				r.Runner = ExecRunner{Log: f, Redact: r.safeOutput}
 			}
 		}
 	} else if r.state.Params.PanelDomain == "" {
@@ -245,8 +248,17 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 		err = saveState(statePath(r.Root), r.state)
 	case 1:
 		services.ReportProgress(ctx, "Проверяю установленные пакеты и зависимости", "Checking installed packages and dependencies")
-		_, err = r.Runner.Run(ctx, setupScript, "bash", "-s", "--", p.Proxy, runtime.GOARCH)
+		setupProxy := p.Proxy
+		if r.state.ProxyRuntime == "docker" {
+			setupProxy = "docker-proxy"
+		}
+		_, err = r.Runner.Run(ctx, setupScript, "bash", "-s", "--", setupProxy, runtime.GOARCH)
 	case 2:
+		if r.state.LayoutVersion >= officialLayout && !r.state.Completed[2] {
+			if err = r.checkOfficialResources(ctx); err != nil {
+				break
+			}
+		}
 		services.ReportProgress(ctx, "Проверяю совместимость firewall", "Checking firewall compatibility")
 		if err = r.checkFirewall(ctx); err == nil {
 			services.ReportProgress(ctx, "Создаю Compose-конфигурацию и закрытые файлы с секретами", "Creating Compose configuration and private secret files")
@@ -261,8 +273,12 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 	case 4:
 		err = r.bootstrap(ctx)
 	case 5:
+		if p.RemoteSubscription != nil {
+			_, err = r.remoteSubscription(ctx, "install", "")
+			break
+		}
 		services.ReportProgress(ctx, "Сохраняю настройки и загружаю образ страницы подписки", "Saving settings and downloading the subscription page image")
-		if err = writeFile(filepath.Join(r.Stack, "subscription.env"), renderSubEnv(r.state), 0600); err == nil {
+		if err = writeFile(r.subEnvPath(), renderSubEnv(r.state), 0600); err == nil {
 			_, err = r.compose(ctx, "--profile", "subscription", "pull", "subscription")
 		}
 		if err == nil {
@@ -280,7 +296,11 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 					r.state.SubImage = image
 					err = saveState(statePath(r.Root), r.state)
 					if err == nil {
-						err = r.configure()
+						if r.state.LayoutVersion >= officialLayout {
+							_, err = r.setComposeImage("subscription", image)
+						} else {
+							err = r.configure()
+						}
 					}
 				}
 			}
@@ -319,7 +339,44 @@ func (r *Real) configure() error {
 	if e != nil {
 		return e
 	}
-	for path, data := range map[string][]byte{"compose.json": data, ".env": renderEnv(r.state), "subscription.env": renderSubEnv(r.state), ".remnamanager-go": []byte("managed\n")} {
+	files := map[string][]byte{filepath.Base(r.stackComposePath()): data, ".env": renderEnv(r.state), ".remnamanager-go": []byte("managed\n")}
+	if r.state.LayoutVersion >= officialLayout {
+		if old, err := os.ReadFile(r.stackComposePath()); err == nil {
+			patched, e := patchOfficialAuthentication(old, r.state)
+			if e != nil {
+				return e
+			}
+			files[filepath.Base(r.stackComposePath())] = patched
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if old, err := os.ReadFile(filepath.Join(r.Stack, ".env")); err == nil {
+			files[".env"] = old
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if r.state.Params.RemoteSubscription == nil {
+		rel, _ := filepath.Rel(r.Stack, r.subEnvPath())
+		files[rel] = renderSubEnv(r.state)
+		if r.state.LayoutVersion >= 1 {
+			sub, e := RenderLocalSubscription(r.state)
+			if e != nil {
+				return e
+			}
+			files[filepath.Join("subscription", "docker-compose.yml")] = sub
+			if r.state.LayoutVersion >= officialLayout {
+				for _, name := range []string{rel, filepath.Join("subscription", "docker-compose.yml")} {
+					if old, e := os.ReadFile(filepath.Join(r.Stack, name)); e == nil {
+						files[name] = old
+					} else if !os.IsNotExist(e) {
+						return e
+					}
+				}
+			}
+		}
+	}
+	for path, data := range files {
 		if e = writeFile(filepath.Join(r.Stack, path), data, 0600); e != nil {
 			return e
 		}
@@ -341,15 +398,13 @@ func (r *Real) configure() error {
 	return nil
 }
 func (r *Real) compose(ctx context.Context, args ...string) ([]byte, error) {
-	all := []string{"compose", "--project-directory", r.Stack, "-f", filepath.Join(r.Stack, "compose.json")}
-	all = append(all, args...)
-	return r.Runner.Run(ctx, nil, "docker", all...)
+	return r.Runner.Run(ctx, nil, "docker", r.composeArgs(args...)...)
 }
 func (r *Real) Summary() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := r.state
-	return accessDetails(s, r.Root, false) + "\nLog: " + r.LogPath
+	return fmt.Sprintf("Panel: https://%s\nSubscription: https://%s/<shortUuid>\nProtection: %s\nUse Panel access to reveal the initial credentials.\nLog: %s", s.Params.PanelDomain, s.Params.SubscriptionDomain, protectionMode(s.Params), r.LogPath)
 }
 func (r *Real) Close() error {
 	r.mu.Lock()
@@ -373,9 +428,18 @@ func (r *Real) Close() error {
 }
 
 func (r *Real) preflight(ctx context.Context, p services.PanelParameters) error {
+	if p.RemoteSubscription != nil {
+		old := r.state
+		r.state.Params = p
+		_, err := r.remoteSubscription(ctx, "preflight", "")
+		r.state = old
+		if err != nil {
+			return err
+		}
+	}
 	services.ReportProgress(ctx, "Проверяю сервер и отсутствие чужой установки", "Checking the server and existing installations")
 	if _, e := os.Stat(filepath.Join(r.Stack, ".remnamanager-go")); errors.Is(e, os.ErrNotExist) {
-		if entries, e := os.ReadDir(r.Stack); e == nil && len(entries) > 0 {
+		if entries, e := os.ReadDir(r.Stack); e == nil && len(entries) > 0 && !r.retainedDockerStack() {
 			return errors.New("existing /opt/remnawave is not managed by this installer; refusing overwrite")
 		}
 	}
@@ -385,6 +449,7 @@ func (r *Real) preflight(ctx context.Context, p services.PanelParameters) error 
 		if e != nil || len(ips) == 0 {
 			return fmt.Errorf("DNS is not ready for %s", domain)
 		}
+		services.ReportProgress(ctx, "DNS разрешён. Соответствие origin и внешняя доступность портов ещё не подтверждены; CDN/NAT учитываются при проверке HTTPS.", "DNS resolves. Origin matching and public port reachability are not yet verified; CDN/NAT are checked through public HTTPS.")
 	}
 	services.ReportProgress(ctx, "Определяю SSH-порты и проверяю сохранение доступа", "Detecting SSH ports and verifying access preservation")
 	ssh, e := DetectSSHPorts(ctx, r.Runner)

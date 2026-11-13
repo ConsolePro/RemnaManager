@@ -18,6 +18,8 @@ func (m Model) body() string {
 		return m.routingView()
 	}
 	switch m.screen {
+	case "panelRemoteInput", "panelRemoteTrust":
+		return m.remoteInputView()
 	case "managerRemoveConfirm", "managerRemoveProgress", "managerRemoveResult":
 		return m.managerRemovalView()
 	case "managerInput", "managerConfirm", "managerProgress", "managerResult":

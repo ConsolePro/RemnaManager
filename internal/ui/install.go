@@ -39,6 +39,14 @@ func (m *Model) prepareInstallInputs() {
 	if s, ok := m.liveInstaller(); ok {
 		p = s.Defaults()
 	}
+	m.installRemote = p.RemoteSubscription != nil
+	m.certificateAuthority = p.CertificateAuthority
+	if m.certificateAuthority == "" {
+		m.certificateAuthority = "zerossl"
+	}
+	if p.RemoteSubscription != nil {
+		m.remoteDraft = *p.RemoteSubscription
+	}
 	m.proxyChoice = 0
 	if p.Proxy == "caddy" {
 		m.proxyChoice = 1
@@ -64,9 +72,14 @@ func (m Model) installationParameters() services.PanelParameters {
 	if m.liveInstall() && len(m.inputs) >= 4 {
 		p.Proxy = []string{"nginx", "caddy"}[m.proxyChoice]
 		p.Email = m.cfg.Email
+		p.CertificateAuthority = m.certificateAuthority
 		p.Admin = strings.TrimSpace(m.inputs[2].Value())
 		p.SSHPorts, _ = installer.ParsePorts(m.inputs[3].Value())
 		p.Protection = protectionChoices[m.protectionChoice]
+		if m.installRemote {
+			remote := m.remoteDraft
+			p.RemoteSubscription = &remote
+		}
 		if p.Protection == "tinyauth" && len(m.inputs) > 4 {
 			p.AuthDomain = strings.ToLower(strings.TrimSpace(m.inputs[4].Value()))
 		}
@@ -114,7 +127,7 @@ func (m Model) confirmFirewall() tea.Cmd {
 }
 func (m Model) installOptionsView() string {
 	lines := []string{m.l("Обратный прокси", "Reverse proxy"), ""}
-	for i, proxy := range []string{"Nginx + Certbot", m.l("Caddy (автоматический HTTPS)", "Caddy (automatic HTTPS)")} {
+	for i, proxy := range []string{"Nginx Docker + acme.sh", m.l("Caddy Docker (автоматический HTTPS)", "Caddy Docker (automatic HTTPS)")} {
 		row := "  " + proxy
 		if i == m.proxyChoice {
 			row = accent.Render("› " + proxy)
@@ -124,6 +137,12 @@ func (m Model) installOptionsView() string {
 	if s, ok := m.liveInstaller(); ok && s.Defaults().PanelDomain != "" {
 		lines = append(lines, "", m.l("Продолжение установки: сохраните прежние домены, прокси и логин.", "Resuming installation: keep the saved domains, proxy and login."))
 	}
+	layout := m.l("Один сервер", "One server")
+	if m.installRemote {
+		layout = m.l("Два сервера (подписка через SSH)", "Two servers (subscription over SSH)")
+	}
+	lines = append(lines, "", layout, m.l("S — изменить размещение подписки", "S — change subscription placement"))
+	lines = append(lines, "ACME: "+m.certificateAuthority, m.l("A — Let's Encrypt / ZeroSSL (Nginx)", "A — Let's Encrypt / ZeroSSL (Nginx)"))
 	return strings.Join(lines, "\n") + "\n\n" + m.l("↑/↓ или Tab — выбор · Enter — параметры", "↑/↓ or Tab — select · Enter — parameters")
 }
 func (m Model) realDomainsView() string {

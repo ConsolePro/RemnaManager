@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -23,10 +22,15 @@ import (
 func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
 
 type State struct {
-	NodeSSH                                                              map[string]services.NodeSSH
-	Params                                                               services.PanelParameters
-	BackendTag, SubImage                                                 string
-	SubSource                                                            string
+	DetachedSubscription                         *services.PanelParameters
+	NodeSSH                                      map[string]services.NodeSSH
+	Params                                       services.PanelParameters
+	BackendTag, SubImage                         string
+	SubSource                                    string
+	LayoutVersion                                int
+	ProxyRecovery, ProxyTarget, ProtectionBackup string
+	// Empty on installations created before Docker proxy support.
+	ProxyRuntime                                                         string
 	DBPassword, AppSecret, MetricsPassword, WebhookSecret, AdminPassword string
 	ManagerToken, SubToken                                               string
 	CookieKey, CookieValue, TinyPassword, TinyHash                       string
@@ -41,8 +45,9 @@ type State struct {
 	RollbackAt                                                           time.Time
 	Ready                                                                bool
 	// An interrupted backend update may already have migrated the database.
-	RecoveryBackup string
-	SubRecovery    string
+	RecoveryBackup  string
+	SubRecovery     string
+	RemoteLastError string
 }
 
 func secret() (string, error) {
@@ -74,7 +79,7 @@ func loadState(path string) (State, error) {
 	if e != nil {
 		return s, e
 	}
-	e = json.Unmarshal(data, &s)
+	e = decodeState(path, data, &s)
 	removed := s.Removed && s.Params.PanelDomain == "" && !s.RemovalPending
 	if e == nil && !removed && (s.Completed == nil || s.DBPassword == "" || s.AdminPassword == "") {
 		e = errors.New("invalid installation state; restore backup rather than overwriting secrets")
@@ -82,7 +87,7 @@ func loadState(path string) (State, error) {
 	return s, e
 }
 func saveState(path string, s State) error {
-	data, e := json.MarshalIndent(s, "", "  ")
+	data, e := encodeState(path, s)
 	if e != nil {
 		return e
 	}
@@ -90,6 +95,14 @@ func saveState(path string, s State) error {
 }
 
 func ValidateParameters(p services.PanelParameters) error {
+	if panelCA(p) != "letsencrypt" && panelCA(p) != "zerossl" {
+		return errors.New("certificate authority must be letsencrypt or zerossl")
+	}
+	if p.RemoteSubscription != nil {
+		if err := ValidateSubscriptionRemote(*p.RemoteSubscription); err != nil {
+			return err
+		}
+	}
 	if !ValidDomain(p.PanelDomain) || !ValidDomain(p.SubscriptionDomain) || strings.EqualFold(p.PanelDomain, p.SubscriptionDomain) {
 		return errors.New("two different valid domains are required")
 	}

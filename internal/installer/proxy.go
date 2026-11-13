@@ -12,7 +12,10 @@ import (
 )
 
 func proxyDomains(p services.PanelParameters) []string {
-	domains := []string{p.PanelDomain, p.SubscriptionDomain}
+	domains := []string{p.PanelDomain}
+	if p.RemoteSubscription == nil {
+		domains = append(domains, p.SubscriptionDomain)
+	}
 	if protectionMode(p) == "tinyauth" {
 		domains = append(domains, p.AuthDomain)
 	}
@@ -40,7 +43,7 @@ func caddyUpstream(port int) string {
 func RenderCaddy(s State) string {
 	p := s.Params
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Managed by RemnaManager Go\n{\n email %q\n admin 127.0.0.1:2019\n}\n%s {\n header Referrer-Policy no-referrer\n", p.Email, p.PanelDomain)
+	fmt.Fprintf(&b, "# Managed by RemnaManager Go\n{\n email %q\n admin 127.0.0.1:2019\n}\n%s {\n encode zstd gzip\n header Referrer-Policy no-referrer\n", p.Email, p.PanelDomain)
 	if validateProtectionState(s) != nil {
 		b.WriteString(" respond Forbidden 403\n")
 	} else if protectionMode(p) == "cookie" {
@@ -67,11 +70,27 @@ func RenderCaddy(s State) string {
 		b.WriteString(" route {\n forward_auth 127.0.0.1:3020 {\n uri /api/auth/caddy\n header_up -X-Original-URL\n header_up -X-Original-Method\n header_up Authorization {http.request.header.X-Api-Key}\n }\n" + caddyUpstream(3000) + " }\n")
 	}
 	b.WriteString("}\n")
-	fmt.Fprintf(&b, "%s {\n %s}\n", p.SubscriptionDomain, caddyUpstream(3010))
+	// The remote subpage uses its scoped Bearer token on read-only API routes.
+	// It never receives the panel's gate cookie, TinyAuth or MFA credentials.
+	if p.RemoteSubscription == nil {
+		fmt.Fprintf(&b, "%s {\n encode zstd gzip\n %s}\n", p.SubscriptionDomain, caddyUpstream(3010))
+	}
 	if protectionMode(p) == "tinyauth" {
 		fmt.Fprintf(&b, "%s {\n header Referrer-Policy no-referrer\n %s}\n", p.AuthDomain, caddyUpstream(3020))
 	}
-	return b.String()
+	text := b.String()
+	if p.RemoteSubscription != nil && s.SubToken != "" && validateProtectionState(s) == nil {
+		gateway := fmt.Sprintf(" route {\n @subscription_api {\n method GET\n path /api/subscriptions/* /api/subscription-page-configs /api/subscription-page-configs/* /api/system/stats\n header Authorization \"Bearer %s\"\n }\n handle @subscription_api {\n %s\n }\n handle {\n", s.SubToken, caddyUpstream(3000))
+		start := strings.Index(text, " header Referrer-Policy no-referrer\n")
+		if start >= 0 {
+			start += len(" header Referrer-Policy no-referrer\n")
+			end := strings.Index(text[start:], "\n}\n")
+			if end >= 0 {
+				text = text[:start] + gateway + text[start:start+end] + "\n }\n }" + text[start+end:]
+			}
+		}
+	}
+	return text
 }
 
 func nginxUpstream(port int) string {
@@ -101,6 +120,7 @@ func RenderNginx(s State, tls bool) string {
 	p := s.Params
 	var b strings.Builder
 	b.WriteString("# Managed by RemnaManager Go\nmap $http_upgrade $rm_go_connection { default upgrade; '' close; }\n")
+	b.WriteString("gzip on;\ngzip_vary on;\ngzip_min_length 256;\ngzip_proxied any;\ngzip_types application/javascript application/json application/wasm application/xml image/svg+xml text/css text/plain;\n")
 	protected := validateProtectionState(s) == nil
 	if tls && protected && protectionMode(p) == "cookie" {
 		// Regex entries avoid Nginx's default 64-byte map hash bucket limit.
@@ -119,13 +139,16 @@ func RenderNginx(s State, tls bool) string {
 		b.WriteString(" server_tokens off;\n")
 		if i != 0 {
 			port := 3010
-			if i == 2 {
+			if domain == p.AuthDomain {
 				port = 3020
 			}
 			b.WriteString(" location / {\n" + nginxUpstream(port) + " }\n}\n")
 			continue
 		}
 		b.WriteString(" access_log off;\n add_header Referrer-Policy no-referrer always;\n")
+		if protected && p.RemoteSubscription != nil && s.SubToken != "" {
+			fmt.Fprintf(&b, " location ~ ^/api/(subscriptions/|subscription-page-configs(/|$)|system/stats$) {\n if ($request_method != GET) { return 403; }\n if ($http_authorization != \"Bearer %s\") { return 403; }\n%s }\n", s.SubToken, nginxUpstream(3000))
+		}
 		if !protected {
 			b.WriteString(" location / { return 403; }\n}\n")
 			continue
@@ -174,6 +197,9 @@ func RenderNginx(s State, tls bool) string {
 }
 
 func (r *Real) configureProxy(ctx context.Context) error {
+	if r.state.ProxyRuntime == "docker" {
+		return r.configureDockerProxy(ctx)
+	}
 	p := r.state.Params
 	if err := validateProtectionState(r.state); err != nil {
 		return err

@@ -10,7 +10,7 @@ missing=()
 for package in ca-certificates curl gnupg nftables iproute2 openssh-server util-linux; do
     if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed'; then missing+=("$package"); fi
 done
-case $proxy in nginx) packages=(nginx certbot);; caddy) packages=(caddy);; node) packages=(nginx openssl);; *) exit 2;; esac
+case $proxy in nginx) packages=(nginx certbot);; caddy) packages=(caddy);; docker-proxy) packages=(cron socat openssl);; node) packages=(nginx openssl);; *) exit 2;; esac
 for package in "${packages[@]}"; do
     if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed'; then missing+=("$package"); fi
 done

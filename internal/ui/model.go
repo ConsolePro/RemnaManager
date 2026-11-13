@@ -93,6 +93,11 @@ type Model struct {
 	panelTitle                                         string
 	panelResult                                        string
 	customChoice                                       int
+	installRemote, remoteInstallWizard                 bool
+	certificateAuthority                               string
+	remoteDraft                                        services.SubscriptionRemote
+	remoteFingerprint                                  string
+	panelInstallInputs                                 []textinput.Model
 	nodeAction, nodeTitle, nodeFingerprint             string
 	nodeRequest                                        services.NodeRequest
 	nodeList                                           []services.Node
@@ -169,6 +174,18 @@ func (m *Model) startSettings(editing bool) {
 	m.problem = ""
 }
 func (m *Model) back() {
+	if m.screen == "panelRemoteInput" || m.screen == "panelRemoteTrust" {
+		m.remoteDraft.SSH.HostKey = ""
+		if m.remoteInstallWizard {
+			m.inputs = m.panelInstallInputs
+			m.panelInstallInputs = nil
+			m.screen = "domains"
+			m.focus = 0
+		} else {
+			m.screen = "menu"
+		}
+		return
+	}
 	if strings.HasPrefix(m.screen, "route") {
 		m.backRouting()
 		return
@@ -494,6 +511,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter", "right":
 				selected := f.items[f.cursor]
 				if len(selected.children) > 0 {
+					if len(m.frames) == 1 && f.cursor == 0 {
+						if _, ok := m.service.(services.PanelManager); ok {
+							return m.openPanelOperation(operation("Проверка компонентов", "Inspect components", "panel-inspect"))
+						}
+					}
 					m.frames = append(m.frames, frame{items: selected.children, title: selected.ru, titleEN: selected.en})
 					m.viewport.GotoTop()
 					break
@@ -540,7 +562,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateManagerScreen(msg)
 		case "nodesList", "nodesCard", "nodesInput", "nodesTrust", "nodesConfirm", "nodesResult", "nodesCoreVersions":
 			return m.updateNodeScreen(msg)
-		case "panelInput", "panelConfirm", "panelResult", "panelCustom", "panelProtection":
+		case "panelInput", "panelConfirm", "panelResult", "panelCustom", "panelProtection", "panelRemoteInput", "panelRemoteTrust":
 			return m.updatePanelScreen(msg)
 		case "language":
 			switch key {
@@ -590,7 +612,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				p := m.parameters()
 				if m.liveInstall() {
-					if err := installer.ValidateParameters(p); err != nil {
+					check := p
+					check.RemoteSubscription = nil
+					if err := installer.ValidateParameters(check); err != nil {
 						m.problem = m.errorText(err)
 						break
 					}
@@ -600,6 +624,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					break
 				}
 				m.problem = ""
+				if m.installRemote {
+					m.remoteInstallWizard = true
+					m.panelInstallInputs = m.inputs
+					return m.openRemoteInputs()
+				}
 				m.screen = "confirm"
 			}
 		case "confirm":
@@ -623,6 +652,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.screen = "menu"
 			}
 		case "installOptions":
+			if key == "a" {
+				if m.certificateAuthority == "zerossl" {
+					m.certificateAuthority = "letsencrypt"
+				} else {
+					m.certificateAuthority = "zerossl"
+				}
+			}
+			if key == "s" {
+				m.installRemote = !m.installRemote
+			}
 			if key == "left" || key == "right" || key == "up" || key == "down" || key == "tab" || key == "shift+tab" {
 				m.proxyChoice = 1 - m.proxyChoice
 			}

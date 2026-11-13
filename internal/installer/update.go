@@ -53,6 +53,13 @@ func (r *Real) updatePanel(ctx context.Context, version string) (string, error) 
 	if err := ValidateBackendVersion(version); err != nil {
 		return "", err
 	}
+	if r.state.ProxyRuntime == "docker" {
+		actual, err := r.installedBackendVersion(ctx)
+		if err != nil {
+			return "", err
+		}
+		r.state.BackendTag = actual
+	}
 	if versionOlder(version, r.state.BackendTag) {
 		return "", errors.New("backend downgrades require an explicit database restore and are not supported by Update")
 	}
@@ -91,7 +98,7 @@ func (r *Real) updatePanel(ctx context.Context, version string) (string, error) 
 		_, restartErr := r.compose(resume, "up", "-d", "--no-deps", "remnawave")
 		return errors.Join(cause, restartErr)
 	}
-	backup, err := r.backup(ctx)
+	backup, err := r.backup(ctx, "pre-update")
 	if err != nil {
 		return "", resumeOld(err)
 	}
@@ -99,7 +106,7 @@ func (r *Real) updatePanel(ctx context.Context, version string) (string, error) 
 	if err != nil {
 		return "", resumeOld(err)
 	}
-	restore := func() error { return writeFile(filepath.Join(r.Stack, "compose.json"), old, 0600) }
+	restore := func() error { return writeFile(r.stackComposePath(), old, 0600) }
 	_, err = r.compose(ctx, "config", "--quiet")
 	if err != nil {
 		if restoreErr := restore(); restoreErr != nil {
@@ -117,6 +124,9 @@ func (r *Real) updatePanel(ctx context.Context, version string) (string, error) 
 	}
 	if _, err = r.compose(ctx, "up", "-d", "--no-deps", "--wait", "--wait-timeout", "240", "remnawave"); err == nil {
 		err = r.waitAPI(ctx)
+	}
+	if err == nil && r.state.ProxyRuntime == "docker" {
+		err = r.waitHTTPS(ctx)
 	}
 	if err != nil {
 		// Never start an old backend against a possibly migrated database.
@@ -183,7 +193,7 @@ func (r *Real) updateSubscription(ctx context.Context, source string) (string, e
 		return "", err
 	}
 	oldState := r.state
-	old, err := os.ReadFile(filepath.Join(r.Stack, "compose.json"))
+	old, err := os.ReadFile(r.subComposePath())
 	if err != nil {
 		return "", err
 	}
@@ -214,9 +224,12 @@ func (r *Real) updateSubscription(ctx context.Context, source string) (string, e
 		r.state = oldState
 		recovery, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		restoreErr := writeFile(filepath.Join(r.Stack, "compose.json"), old, 0600)
+		restoreErr := writeFile(r.subComposePath(), old, 0600)
 		if restoreErr == nil {
 			_, restoreErr = r.compose(recovery, "--profile", "subscription", "up", "-d", "--no-deps", "subscription")
+		}
+		if restoreErr == nil && r.state.LayoutVersion >= 1 {
+			restoreErr = r.waitSubscription(recovery)
 		}
 		if restoreErr != nil {
 			r.state.SubRecovery = recoveryPath
@@ -235,7 +248,7 @@ func (r *Real) startSubscription(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err = writeFile(filepath.Join(r.Stack, "compose.json"), old, 0600); err != nil {
+		if err = writeFile(r.subComposePath(), old, 0600); err != nil {
 			return err
 		}
 	}
@@ -245,7 +258,7 @@ func (r *Real) startSubscription(ctx context.Context) error {
 	if err := r.bootstrap(ctx); err != nil {
 		return err
 	}
-	if err := writeFile(filepath.Join(r.Stack, "subscription.env"), renderSubEnv(r.state), 0600); err != nil {
+	if err := writeFile(r.subEnvPath(), renderSubEnv(r.state), 0600); err != nil {
 		return err
 	}
 	if _, err := r.compose(ctx, "--profile", "subscription", "up", "-d", "subscription"); err != nil {

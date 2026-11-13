@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gopkg.in/yaml.v3"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,6 +40,15 @@ func (r *Real) removePanel(ctx context.Context) error {
 		}
 	}
 	if r.state.RemovalPhase < 2 {
+		if r.state.LayoutVersion >= 1 && r.state.Params.RemoteSubscription == nil {
+			if _, e := os.Stat(r.subComposePath()); e == nil {
+				if _, err := r.subscriptionCompose(ctx, "down"); err != nil && !(errors.Is(err, exec.ErrNotFound) && !r.state.Completed[2]) {
+					return err
+				}
+			} else if !os.IsNotExist(e) {
+				return e
+			}
+		}
 		// A trusted manifest also removes dormant TinyAuth/MFA volumes after a
 		// protection switch. It needs no env files from an incomplete installation.
 		services := map[string]any{}
@@ -54,7 +64,15 @@ func (r *Real) removePanel(ctx context.Context) error {
 		// Compose prunes unused volume definitions before down. Reference every
 		// owned volume so data from previously selected protection modes is removed.
 		services["remnawave"].(map[string]any)["volumes"] = mounts
-		data, err := json.Marshal(map[string]any{"name": "remnamanager-panel", "services": services, "volumes": volumes, "networks": map[string]any{"panel": map[string]any{}}})
+		project := "remnamanager-panel"
+		network := map[string]any{}
+		if r.state.LayoutVersion >= officialLayout {
+			project = "remnawave"
+			network["name"] = "remnawave-network"
+			volumes["database"] = map[string]any{"name": "remnawave-db-data"}
+			volumes["valkey-socket"] = map[string]any{"name": "valkey-socket"}
+		}
+		data, err := json.Marshal(map[string]any{"name": project, "services": services, "volumes": volumes, "networks": map[string]any{"panel": network}})
 		if err != nil {
 			return err
 		}
@@ -84,13 +102,14 @@ func (r *Real) removePanel(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	for _, name := range []string{"compose.json", ".env", "subscription.env", "tinyauth.env", "mfa.env", "mfa.Caddyfile", "mfa-build/Dockerfile"} {
+	for _, name := range []string{"compose.json", "docker-compose.yml", ".env", "subscription.env", "subscription/docker-compose.yml", "subscription/.env", "tinyauth.env", "mfa.env", "mfa.Caddyfile", "mfa-build/Dockerfile"} {
 		if err := removeKnownFile(filepath.Join(r.Stack, name)); err != nil {
 			return err
 		}
 	}
 	// Remove an empty build directory only; never recurse into user content.
 	_ = os.Remove(filepath.Join(r.Stack, "mfa-build"))
+	_ = os.Remove(filepath.Join(r.Stack, "subscription"))
 	if err := removeKnownFile(filepath.Join(r.Stack, ".remnamanager-go")); err != nil {
 		return err
 	}
@@ -106,6 +125,10 @@ func (r *Real) removePanel(ctx context.Context) error {
 		}
 	}
 	clean := State{NodeSSH: r.state.NodeSSH, Removed: true}
+	if r.state.Params.RemoteSubscription != nil {
+		p := r.state.Params
+		clean.DetachedSubscription = &p
+	}
 	if err := saveState(statePath(r.Root), clean); err != nil {
 		return err
 	}
@@ -129,10 +152,24 @@ func (r *Real) removablePartialStack(s State) bool {
 	}
 	for _, entry := range entries {
 		switch entry.Name() {
-		case "compose.json", ".env", "subscription.env", "tinyauth.env", "mfa.env", "mfa.Caddyfile":
+		case "compose.json", "docker-compose.yml", ".env", "subscription.env", "tinyauth.env", "mfa.env", "mfa.Caddyfile":
 			info, err := entry.Info()
 			if err != nil || !info.Mode().IsRegular() {
 				return false
+			}
+		case "subscription":
+			if s.LayoutVersion < 1 || !entry.IsDir() {
+				return false
+			}
+			children, e := os.ReadDir(filepath.Join(r.Stack, "subscription"))
+			if e != nil {
+				return false
+			}
+			for _, child := range children {
+				info, e := child.Info()
+				if e != nil || !info.Mode().IsRegular() || (child.Name() != "docker-compose.yml" && child.Name() != ".env") {
+					return false
+				}
 			}
 		default:
 			return false
@@ -185,6 +222,36 @@ func (r *Real) removalProxyPath() string {
 }
 
 func (r *Real) validateRemovalProxy() error {
+	if r.state.ProxyRuntime == "docker" {
+		for _, proxy := range []string{"nginx", "caddy"} {
+			data, err := os.ReadFile(filepath.Join(r.Stack, proxy, "docker-compose.yml"))
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			var doc struct {
+				Name     string
+				Services map[string]any
+				Networks map[string]struct {
+					External bool
+					Name     string
+				}
+			}
+			project, network, networkName, service := "remnamanager-"+proxy, "panel", "remnamanager-panel_panel", proxy
+			if r.state.LayoutVersion >= officialLayout {
+				project = ""
+				network = "remnawave-network"
+				networkName = "remnawave-network"
+				service = officialService(r.state, proxy)
+			}
+			if yaml.Unmarshal(data, &doc) != nil || doc.Name != project || len(doc.Services) != 1 || doc.Services[service] == nil || !doc.Networks[network].External || doc.Networks[network].Name != networkName {
+				return errors.New("Docker proxy ownership changed; refusing removal")
+			}
+		}
+		return nil
+	}
 	path := r.removalProxyPath()
 	if err := noSymlinkParents(path); err != nil {
 		return err
@@ -207,6 +274,25 @@ func (r *Real) validateRemovalProxy() error {
 }
 
 func (r *Real) removePanelProxy(ctx context.Context) error {
+	if r.state.ProxyRuntime == "docker" {
+		if err := r.validateRemovalProxy(); err != nil {
+			return err
+		}
+		for _, proxy := range []string{"nginx", "caddy"} {
+			if _, err := os.Stat(filepath.Join(r.Stack, proxy, "docker-compose.yml")); os.IsNotExist(err) {
+				continue
+			}
+			if _, err := r.proxyCompose(ctx, proxy, "down"); err != nil {
+				return err
+			}
+			for _, name := range []string{"docker-compose.yml", "Caddyfile", "nginx.conf"} {
+				if err := removeKnownFile(filepath.Join(r.Stack, proxy, name)); err != nil {
+					return err
+				}
+			}
+		}
+		return writeFile(filepath.Join(r.Root, "retained-docker-proxy"), []byte("managed\n"), 0600)
+	}
 	if err := r.validateRemovalProxy(); err != nil {
 		return err
 	}

@@ -9,6 +9,9 @@ import (
 // RenderStack deliberately publishes neither the database nor Valkey/metrics.
 // Host reverse proxies reach application endpoints only through loopback.
 func RenderStack(s State) ([]byte, error) {
+	if s.LayoutVersion >= officialLayout {
+		return renderOfficialStack(s)
+	}
 	common := func(image string) map[string]any {
 		return map[string]any{"image": image, "restart": "unless-stopped", "networks": []string{"panel"}, "logging": map[string]any{"driver": "json-file", "options": map[string]string{"max-size": "10m", "max-file": "3"}}}
 	}
@@ -32,6 +35,9 @@ func RenderStack(s State) ([]byte, error) {
 	sub["ports"] = []string{"127.0.0.1:3010:3010"}
 	sub["profiles"] = []string{"subscription"}
 	services := map[string]any{"remnawave": backend, "remnawave-db": database, "remnawave-redis": cache, "subscription": sub}
+	if s.Params.RemoteSubscription != nil || s.LayoutVersion >= 1 {
+		delete(services, "subscription")
+	}
 	volumes := map[string]any{"database": map[string]any{}, "valkey-socket": map[string]any{}}
 	if protectionMode(s.Params) == "tinyauth" {
 		auth := common(tinyAuthImage)
@@ -55,6 +61,9 @@ func RenderStack(s State) ([]byte, error) {
 }
 
 func renderEnv(s State) []byte {
+	if s.LayoutVersion >= officialLayout {
+		return renderOfficialEnv(s)
+	}
 	values := []string{"APP_PORT=3000", "METRICS_PORT=3001", "API_INSTANCES=1", "DATABASE_URL=postgresql://postgres:" + s.DBPassword + "@remnawave-db:5432/postgres", "POSTGRES_USER=postgres", "POSTGRES_DB=postgres", "POSTGRES_PASSWORD=" + s.DBPassword, "REDIS_SOCKET=/var/run/valkey/valkey.sock", "APP_SECRET=" + s.AppSecret, "METRICS_USER=admin", "METRICS_PASS=" + s.MetricsPassword, "WEBHOOK_SECRET_HEADER=" + s.WebhookSecret, "WEBHOOK_ENABLED=false", "IS_TELEGRAM_NOTIFICATIONS_ENABLED=false", "EXPORT_TO_STREAM_ENABLED=false", "PANEL_DOMAIN=" + s.Params.PanelDomain, "FRONT_END_DOMAIN=" + s.Params.PanelDomain, "SUB_PUBLIC_DOMAIN=" + s.Params.SubscriptionDomain, "SERVICE_SNI_VERIFICATION=true"}
 	return []byte(strings.Join(values, "\n") + "\n")
 }

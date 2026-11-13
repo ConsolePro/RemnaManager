@@ -33,7 +33,25 @@ func (m Model) openPanelOperation(selected item) (tea.Model, tea.Cmd) {
 	m.panelRequest = services.PanelRequest{Action: selected.action}
 	m.panelTitle = m.l(selected.ru, selected.en)
 	switch selected.action {
-	case "panel-remove":
+	case "sub-ssh-edit":
+		m.remoteInstallWizard = false
+		if live, ok := m.liveInstaller(); ok && live.Defaults().RemoteSubscription != nil {
+			m.remoteDraft = *live.Defaults().RemoteSubscription
+		}
+		return m.openRemoteInputs()
+	case "panel-proxy", "panel-backup-verify", "panel-backup-delete", "panel-restore", "panel-diagnostics":
+		placeholder := "backup-YYYYMMDD-HHMMSS-ID"
+		if selected.action == "panel-proxy" {
+			placeholder = "nginx / caddy"
+		}
+		if selected.action == "panel-diagnostics" {
+			placeholder = "/assets/example.wasm (optional)"
+		}
+		m.inputs = []textinput.Model{newInput(placeholder, "")}
+		m.focus = 0
+		m.screen = "panelInput"
+		return m, m.inputs[0].Focus()
+	case "panel-remove", "sub-remove":
 		m.screen = "panelInput"
 		m.inputs = []textinput.Model{newInput("DELETE", "")}
 		m.focus = 0
@@ -59,7 +77,7 @@ func (m Model) openPanelOperation(selected item) (tea.Model, tea.Cmd) {
 		m.inputs = []textinput.Model{input}
 		m.focus = 0
 		return m, m.inputs[0].Focus()
-	case "panel-status", "panel-logs", "panel-credentials":
+	case "panel-status", "panel-logs", "panel-credentials", "panel-inspect", "panel-backup-list", "panel-version", "sub-status":
 		return m.startPanelOperation()
 	default:
 		m.screen = "panelConfirm"
@@ -90,6 +108,36 @@ func (m Model) receivePanelResult(msg panelResultMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.cancelInstall()
+	if m.panelRequest.Action == "sub-ssh-scan" && msg.err == nil {
+		m.remoteDraft = msg.result.Remote
+		m.remoteFingerprint = msg.result.Fingerprint
+		m.screen = "panelRemoteTrust"
+		return m, nil
+	}
+	if m.panelRequest.Action == "panel-inspect" && msg.err == nil {
+		items := menu()[0].children
+		if msg.result.Installation == "absent" {
+			for _, entry := range items {
+				if entry.en == "Backups and restore" {
+					items = []item{items[0], entry}
+					break
+				}
+			}
+		} else if msg.result.Installation != "partial" {
+			items = items[1:]
+		}
+		m.frames = append(m.frames, frame{items: items, title: "Панель и компоненты", titleEN: "Panel and components"})
+		if msg.result.Remote.SSH.Host != "" {
+			last := len(m.frames) - 1
+			m.frames[last].items = append(m.frames[last].items, group("Сохранённая удалённая подписка", "Preserved remote subscription", operation("Статус", "Status", "sub-status"), operation("SSH-доступ", "SSH access", "sub-ssh-details"), operation("Удалить удалённую подписку", "Remove remote subscription", "sub-remove")))
+		}
+		m.screen = "panelResult"
+		m.panelResult = msg.result.Text
+		if m.cfg.Language != "en" && msg.result.TextRU != "" {
+			m.panelResult = msg.result.TextRU
+		}
+		return m, nil
+	}
 	if len(msg.result.Command) > 0 && msg.err == nil {
 		command := msg.result.Command
 		cmd := exec.CommandContext(m.ctx, command[0], command[1:]...)
@@ -119,6 +167,8 @@ func (m Model) receivePanelResult(msg panelResultMsg) (tea.Model, tea.Cmd) {
 func (m Model) updatePanelScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	switch m.screen {
+	case "panelRemoteInput", "panelRemoteTrust":
+		return m.updateRemoteInput(msg)
 	case "panelProtection":
 		switch key {
 		case "up", "down", "left", "right", "tab", "shift+tab":
@@ -162,7 +212,20 @@ func (m Model) updatePanelScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			value := strings.TrimSpace(m.inputs[0].Value())
 			var err error
 			switch m.panelRequest.Action {
-			case "panel-remove":
+			case "panel-proxy":
+				value = strings.ToLower(value)
+				if value != "nginx" && value != "caddy" {
+					err = fmt.Errorf("choose nginx or caddy")
+				}
+			case "panel-backup-verify", "panel-backup-delete", "panel-restore":
+				if !strings.HasPrefix(value, "backup-") || strings.ContainsAny(value, "/\\:") {
+					err = fmt.Errorf("enter a backup name from the list")
+				}
+			case "panel-remove", "sub-remove":
+				if m.panelRequest.Action == "panel-remove" && value == "DELETE ALL" {
+					m.panelRequest.DeleteBackups = true
+					value = "DELETE"
+				}
 				if value != "DELETE" {
 					err = fmt.Errorf("%s", m.l("Для удаления введите DELETE", "Type DELETE to confirm removal"))
 				}
@@ -225,8 +288,22 @@ func (m Model) panelScreenView() string {
 		return strings.Join(rows, "\n")
 	case "panelInput":
 		label := m.l("Версия backend (стабильный тег):", "Backend version (stable tag):")
-		if m.panelRequest.Action == "panel-remove" {
+		switch m.panelRequest.Action {
+		case "panel-proxy":
+			label = m.l("Новый прокси: nginx или caddy. Текущая защита сохраняется.", "New proxy: nginx or caddy. Current protection is preserved.")
+		case "panel-backup-verify", "panel-backup-delete", "panel-restore":
+			label = m.l("Имя каталога из списка резервных копий:", "Directory name from the backup list:")
+		case "panel-diagnostics":
+			label = m.l("Точный путь WASM из Network браузера; пустое поле — диагностика прокси:", "Exact WASM path from browser Network; leave empty for proxy diagnostics:")
+		}
+		if m.panelRequest.Action == "panel-remove" || m.panelRequest.Action == "sub-remove" {
 			label = m.l("Будут безвозвратно удалены панель, подписка, БД и данные TinyAuth/MFA.\nРезервную копию можно сделать в Remnawave CLI → Резервная копия БД.\nДля продолжения введите DELETE:", "Panel, subscription, database and TinyAuth/MFA data will be permanently deleted.\nYou can create a backup in Remnawave CLI → Database backup.\nType DELETE to continue:")
+		}
+		if m.panelRequest.Action == "panel-remove" {
+			label += "\n" + m.l("DELETE — сохранить копии; DELETE ALL — удалить также резервные копии.", "DELETE preserves backups; DELETE ALL also removes backups.")
+		}
+		if m.panelRequest.Action == "sub-remove" {
+			label = m.l("Удалить только удалённую подписку и её прокси? Панель останется. Введите DELETE:", "Remove only the remote subscription and its proxy? The panel remains. Type DELETE:")
 		}
 		if m.panelRequest.Action == "panel-token" {
 			label = m.l("Новый токен управления (ввод скрыт):", "New manager token (hidden input):")
@@ -244,13 +321,31 @@ func (m Model) panelScreenView() string {
 		return text + "\n\n" + m.l("Enter — проверить и продолжить · Esc — назад", "Enter — validate and continue · Esc — back")
 	case "panelConfirm":
 		text := title + "\n\n"
+		if live, ok := m.liveInstaller(); ok && (m.panelRequest.Action == "panel-proxy" || m.panelRequest.Action == "panel-protection") {
+			p := live.Defaults()
+			text += fmt.Sprintf("%s: %s\n%s: %s\n", m.l("Текущий прокси", "Current proxy"), p.Proxy, m.l("Текущая защита", "Current protection"), p.Protection)
+		}
 		if m.panelRequest.Value != "" && m.panelRequest.Action != "panel-token" {
 			text += m.panelRequest.Value + "\n\n"
 		}
 		description := m.l("Операция изменит компоненты управляемого стека.", "This operation changes components in the managed stack.")
 		switch m.panelRequest.Action {
+		case "panel-proxy":
+			description = m.l("Будет создана резервная копия и проверена новая конфигурация.\nПри сбое HTTPS будет запущен прежний прокси.\nВозможен короткий простой. Существующие сертификаты сохраняются.\nПереход с системной службы на Docker выполняется только этой операцией.", "A backup and configuration validation precede switching.\nHTTPS failure restarts the previous proxy. Brief downtime is possible.\nCertificates are preserved. This explicitly migrates legacy system services to Docker.")
+			description += "\n" + m.l("В новом формате Nginx требует общий SAN-сертификат. Если его нет, будет запрошен новый общий сертификат через ACME.", "The new Nginx layout requires a shared SAN certificate. If absent, a new shared certificate will be requested through ACME.")
+		case "panel-restore":
+			description = m.l("ЗАМЕНИТЬ PostgreSQL и конфигурацию выбранной копией?\nТекущие изменения данных будут потеряны. Будет создана копия pre-restore.\nВосстанавливаются согласованные версия приложения и база; требуется совпадение доменов, защиты и прокси.", "REPLACE PostgreSQL and configuration with this snapshot?\nCurrent data changes will be lost. A pre-restore backup is created first.\nThe matching application version and database are restored; domains, protection and proxy must match.")
+		case "panel-backup-delete":
+			description = m.l("Безвозвратно удалить только выбранную резервную копию?", "Permanently delete only this selected backup?")
+		case "panel-diagnostics":
+			description = m.l("Прочитать конфигурацию и логи прокси, проверить WASM двумя запросами.\nДля TinyAuth/MFA без браузерной сессии возможен ответ авторизации.\nДиагностика не изменяет настройки.", "Read proxy configuration and logs; request WASM twice.\nTinyAuth/MFA may return an authorization response without a browser session.\nDiagnostics do not change settings.")
 		case "panel-remove":
 			description = m.l("Безвозвратно удалить панель, подписку, БД и данные TinyAuth/MFA?\nБудут удалены настройки прокси и firewall этой панели.\nУдаление правил firewall может открыть другие порты сервера.\nРезервные копии, сертификаты, пакеты, менеджер и удалённые ноды сохранятся.\nПосле удаления можно заново установить панель.", "Permanently remove panel, subscription, database and TinyAuth/MFA data?\nThis panel's proxy configuration and firewall rules will be removed.\nRemoving firewall rules may expose other server ports.\nBackups, certificates, packages, manager and remote nodes will be preserved.\nYou can install the panel again afterwards.")
+			if m.panelRequest.DeleteBackups {
+				description = m.l("Безвозвратно удалить панель, данные и ВСЕ резервные копии этой установки?\nСертификаты и удалённые серверы сохраняются.", "Permanently remove the panel, data and ALL backups of this installation?\nCertificates and remote servers are preserved.")
+			}
+		case "sub-remove":
+			description = m.l("Безвозвратно удалить конфигурацию подписки на удалённом сервере? Сертификаты и резервные файлы сохраняются.", "Permanently remove the subscription configuration on the remote server? Certificates and recovery files are preserved.")
 		case "panel-protection":
 			description = m.l("Будет включена защита: ", "Enable protection: ") + m.panelRequest.Protection + "\n" + m.l("Сервисы панели будут запущены, прокси перенастроен.\nДанные дополнительного входа будут сохранены и показаны.\nПароль панели не меняется.\nПри повторе после ошибки выберите тот же режим и домен.", "Panel services will be started and the proxy reconfigured.\nThe additional login credentials will be saved and shown.\nThe panel password is unchanged.\nAfter an error retry the same mode and domain.")
 			if m.panelRequest.Protection == "mfa" {

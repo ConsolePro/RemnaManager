@@ -71,7 +71,7 @@ func (r *Real) prepareManagement(ctx context.Context, removal ...bool) error {
 		}
 		r.LogPath = r.log.Name()
 		if _, ok := r.Runner.(ExecRunner); ok {
-			r.Runner = ExecRunner{Log: r.log}
+			r.Runner = ExecRunner{Log: r.log, Redact: r.safeOutput}
 		}
 	}
 	return nil
@@ -79,6 +79,70 @@ func (r *Real) prepareManagement(ctx context.Context, removal ...bool) error {
 
 func (r *Real) manage(ctx context.Context, request services.PanelRequest) (services.PanelResult, error) {
 	var result services.PanelResult
+	if request.Action == "panel-inspect" {
+		return r.inspectPanel(ctx)
+	}
+	if request.Action == "sub-ssh-scan" {
+		return r.scanSubscriptionSSH(ctx, request.Remote)
+	}
+	if request.Action == "sub-status" || request.Action == "sub-remove" || request.Action == "sub-ssh-details" {
+		s, e := loadState(statePath(r.Root))
+		if e != nil {
+			return result, e
+		}
+		if s.Removed && s.DetachedSubscription != nil {
+			r.state = s
+			r.state.Params = *s.DetachedSubscription
+			if request.Action == "sub-ssh-details" {
+				result.Text = r.remoteSSHDetails()
+				r.state = s
+				return result, nil
+			}
+			if request.Action == "sub-remove" && request.Value != "DELETE" {
+				r.state = s
+				return result, errors.New("type DELETE to remove the remote subscription")
+			}
+			action := "status"
+			if request.Action == "sub-remove" {
+				action = "remove"
+			}
+			result.Text, e = r.remoteSubscription(ctx, action, "")
+			r.state = s
+			if e == nil && action == "remove" {
+				r.state.DetachedSubscription = nil
+				e = saveState(statePath(r.Root), r.state)
+			}
+			return result, e
+		}
+	}
+	if request.Action == "panel-backup-list" || request.Action == "panel-backup-verify" || request.Action == "panel-backup-delete" {
+		if err := os.MkdirAll(r.Root, 0700); err != nil {
+			return result, err
+		}
+		if r.lock == nil {
+			var e error
+			r.lock, e = lockFile(filepath.Join(r.Root, "install.lock"))
+			if e != nil {
+				return result, e
+			}
+		}
+		var e error
+		r.state, e = loadState(statePath(r.Root))
+		if e != nil {
+			return result, e
+		}
+		switch request.Action {
+		case "panel-backup-list":
+			result.Text, e = r.listBackups()
+		case "panel-backup-verify":
+			_, e = r.verifyBackup(request.Value)
+			result.Text = "Backup verified / Копия проверена"
+		case "panel-backup-delete":
+			e = r.deleteBackup(request.Value)
+			result.Text = "Backup deleted / Копия удалена"
+		}
+		return result, e
+	}
 	// Reading the saved password must also work after an interrupted install,
 	// without Docker, a complete stack or a long-running operation's lock.
 	if request.Action == "panel-credentials" {
@@ -106,6 +170,20 @@ func (r *Real) manage(ctx context.Context, request services.PanelRequest) (servi
 		if err := r.removePanel(ctx); err != nil {
 			return result, fmt.Errorf("removal incomplete; retry Remove panel: %w; private log: %s", err, r.LogPath)
 		}
+		if request.DeleteBackups {
+			entries, e := os.ReadDir(r.Root)
+			if e != nil {
+				return result, e
+			}
+			for _, entry := range entries {
+				if entry.IsDir() && backupNamePattern.MatchString(entry.Name()) {
+					if e = r.deleteBackup(entry.Name()); e != nil {
+						return result, e
+					}
+				}
+			}
+			return services.PanelResult{Text: "Panel and selected backups removed. Certificates and remote servers preserved.", TextRU: "Панель и резервные копии удалены. Сертификаты и удалённые серверы сохранены."}, nil
+		}
 		return services.PanelResult{
 			Text:   "Panel, subscription and authentication data removed. You can install the panel again. Backups, certificates, Docker, proxy packages and RemnaManager were preserved. Remote nodes were not changed.",
 			TextRU: "Панель, подписка и данные дополнительного входа удалены. Можно установить панель заново.\nРезервные копии, сертификаты, Docker, пакеты прокси и RemnaManager сохранены. Удалённые ноды не изменены.",
@@ -113,7 +191,56 @@ func (r *Real) manage(ctx context.Context, request services.PanelRequest) (servi
 	}
 	s := r.state
 	var err error
-	readOnly := request.Action == "panel-status" || request.Action == "panel-logs" || request.Action == "panel-backup"
+	if s.Params.RemoteSubscription != nil && strings.HasPrefix(request.Action, "sub-") {
+		switch request.Action {
+		case "sub-ssh-details":
+			return services.PanelResult{Text: r.remoteSSHDetails(), TextRU: r.remoteSSHDetails()}, nil
+		case "sub-ssh-save":
+			if request.Remote.Proxy != s.Params.RemoteSubscription.Proxy {
+				return result, errors.New("SSH settings do not migrate the remote proxy")
+			}
+			scan, e := r.scanSubscriptionSSH(ctx, request.Remote)
+			if e != nil {
+				return result, e
+			}
+			if scan.Fingerprint != request.Fingerprint {
+				return result, errors.New("remote SSH fingerprint changed; scan and confirm again")
+			}
+			old := r.state.Params.RemoteSubscription
+			r.state.Params.RemoteSubscription = &scan.Remote
+			if _, e = r.remoteSubscription(ctx, "status", ""); e != nil {
+				r.state.Params.RemoteSubscription = old
+				return result, e
+			}
+			return services.PanelResult{Text: r.remoteSSHDetails()}, saveState(statePath(r.Root), r.state)
+		case "sub-start":
+			result.Text, err = r.remoteSubscription(ctx, "start", "")
+		case "sub-stop":
+			result.Text, err = r.remoteSubscription(ctx, "stop", "")
+		case "sub-restart":
+			result.Text, err = r.remoteSubscription(ctx, "restart", "")
+		case "sub-status":
+			result.Text, err = r.remoteSubscription(ctx, "status", "")
+		case "sub-check":
+			result.Text, err = r.remoteSubscription(ctx, "check", "")
+		case "sub-update":
+			result.Text, err = r.remoteSubscription(ctx, "update", "")
+		case "sub-image":
+			result.Text, err = r.remoteSubscription(ctx, "image", request.Value)
+		case "sub-remove":
+			if request.Value != "DELETE" {
+				return result, errors.New("type DELETE to remove the remote subscription")
+			}
+			result.Text, err = r.remoteSubscription(ctx, "remove", "")
+		default:
+			return result, errors.New("unsupported remote subscription operation")
+		}
+		if err == nil && result.Text == "" {
+			result.Text = "Remote operation complete / Операция на удалённом сервере завершена"
+		}
+		return result, err
+	}
+	readOnly := request.Action == "panel-status" || request.Action == "panel-logs" || request.Action == "panel-backup" || strings.HasPrefix(request.Action, "panel-backup-") || request.Action == "panel-restore" || request.Action == "panel-diagnostics" || request.Action == "panel-version"
 	if !readOnly && (!s.Ready || s.FirewallPending) {
 		return result, errors.New("complete installation and confirm SSH access before managing components")
 	}
@@ -123,11 +250,60 @@ func (r *Real) manage(ctx context.Context, request services.PanelRequest) (servi
 	if !readOnly && s.RecoveryBackup != "" {
 		return result, fmt.Errorf("a backend update was interrupted; inspect logs and restore the database if needed before clearing RecoveryBackup; backup: %s", s.RecoveryBackup)
 	}
+	if !readOnly && s.ProxyRecovery != "" && request.Action != "panel-proxy" {
+		return result, errors.New("proxy migration was interrupted; choose Change reverse proxy to restore the previous proxy")
+	}
 	if !readOnly && s.SubRecovery != "" && request.Action != "sub-start" {
 		return result, errors.New("subscription update was interrupted; choose Subscription page → Install / start to restore the previous image")
 	}
 	var data []byte
 	switch request.Action {
+	case "panel-proxy":
+		err = r.changeProxy(ctx, request.Value)
+		result.Text = "Reverse proxy changed and HTTPS verified."
+		result.TextRU = "Прокси изменён, HTTPS проверен."
+	case "panel-backup-list":
+		result.Text, err = r.listBackups()
+	case "panel-backup-verify":
+		_, err = r.verifyBackup(request.Value)
+		result.Text = "Backup integrity verified."
+		result.TextRU = "Целостность резервной копии проверена."
+	case "panel-backup-delete":
+		err = r.deleteBackup(request.Value)
+		result.Text = "Backup deleted."
+		result.TextRU = "Резервная копия удалена."
+	case "panel-restore":
+		err = r.restoreBackup(ctx, request.Value)
+		result.Text = "Database and configuration restored; HTTPS verified."
+		result.TextRU = "База и конфигурация восстановлены, HTTPS проверен."
+	case "panel-version":
+		result.Text, err = r.panelVersion(ctx)
+	case "panel-diagnostics":
+		result.Text, err = r.panelDiagnostics(ctx, request.Value)
+	case "panel-restart":
+		_, err = r.compose(ctx, append([]string{"--profile", "subscription", "restart"}, r.panelServices()...)...)
+		if err == nil && s.LayoutVersion >= 1 && s.Params.RemoteSubscription == nil {
+			_, err = r.subscriptionCompose(ctx, "restart", "subscription")
+		}
+		if err == nil {
+			err = r.waitAPI(ctx)
+		}
+		if err == nil && s.Params.RemoteSubscription == nil {
+			err = r.waitSubscription(ctx)
+		}
+		if err == nil {
+			err = r.proxyLifecycle(ctx, "restart")
+		}
+		if err == nil {
+			err = r.waitHTTPS(ctx)
+		}
+	case "sub-restart":
+		_, err = r.compose(ctx, "--profile", "subscription", "restart", "subscription")
+		if err == nil {
+			err = r.waitSubscription(ctx)
+		}
+	case "sub-status":
+		result.Text, err = r.subscriptionStatus(ctx)
 	case "panel-protection":
 		err = r.changeProtection(ctx, request.Protection, request.Value)
 		if err == nil {
@@ -150,17 +326,34 @@ func (r *Real) manage(ctx context.Context, request services.PanelRequest) (servi
 		data, err = r.compose(ctx, append([]string{"--profile", "subscription", "logs", "--tail", "100", "--no-color", "--timestamps"}, r.panelServices()...)...)
 		result.Text = r.safeOutput(data)
 	case "panel-stop":
-		_, err = r.compose(ctx, append([]string{"--profile", "subscription", "stop"}, r.panelServices()...)...)
+		if s.LayoutVersion >= 1 && s.Params.RemoteSubscription == nil {
+			_, err = r.subscriptionCompose(ctx, "stop", "subscription")
+		}
+		if err == nil {
+			_, err = r.compose(ctx, append([]string{"--profile", "subscription", "stop"}, r.panelServices()...)...)
+		}
+		if err == nil {
+			err = r.proxyLifecycle(ctx, "stop")
+		}
 		result.Text = "Panel, subscription, database and cache stopped. Volumes, proxy, certificates and firewall preserved."
 	case "panel-start":
-		err = r.startProtection(ctx)
-		if err == nil {
-			_, err = r.compose(ctx, "up", "-d", "--wait", "--wait-timeout", "240", "remnawave")
+		_, err = r.compose(ctx, append([]string{"--profile", "subscription", "start"}, r.panelServices()...)...)
+		if err == nil && s.LayoutVersion >= 1 && s.Params.RemoteSubscription == nil {
+			_, err = r.subscriptionCompose(ctx, "start", "subscription")
 		}
 		if err == nil {
 			err = r.waitAPI(ctx)
 		}
-		result.Text = "Panel started. Start the subscription page separately if it was stopped."
+		if err == nil && s.Params.RemoteSubscription == nil {
+			err = r.waitSubscription(ctx)
+		}
+		if err == nil {
+			err = r.proxyLifecycle(ctx, "start")
+		}
+		if err == nil {
+			err = r.waitHTTPS(ctx)
+		}
+		result.Text = "Panel and components started and checked."
 	case "panel-backup":
 		result.Text, err = r.backup(ctx)
 	case "panel-token":
@@ -212,7 +405,7 @@ func (r *Real) manage(ctx context.Context, request services.PanelRequest) (servi
 	case "panel-stop":
 		result.TextRU = "Панель, подписка, PostgreSQL и Valkey остановлены.\nДанные, прокси, сертификаты и firewall сохранены."
 	case "panel-start":
-		result.TextRU = "Панель запущена и готова к работе.\nСтраницу подписки при необходимости запустите отдельно."
+		result.TextRU = "Панель и компоненты запущены и проверены."
 	case "panel-backup":
 		result.TextRU = "Резервная копия БД и конфигурации:\n" + result.Text
 	case "panel-token":
@@ -228,7 +421,12 @@ func (r *Real) manage(ctx context.Context, request services.PanelRequest) (servi
 }
 
 func (r *Real) composeArgs(args ...string) []string {
-	return append([]string{"compose", "--project-directory", r.Stack, "-f", filepath.Join(r.Stack, "compose.json")}, args...)
+	directory, path := r.Stack, r.stackComposePath()
+	if r.state.LayoutVersion >= 1 && subscriptionCommand(args) {
+		directory = filepath.Join(r.Stack, "subscription")
+		path = r.subComposePath()
+	}
+	return append([]string{"compose", "--project-directory", directory, "-f", path}, officialArgs(r.state, args)...)
 }
 
 func (r *Real) safeOutput(data []byte) string {
@@ -250,7 +448,7 @@ func (r *Real) safeOutput(data []byte) string {
 	return text
 }
 
-func (r *Real) backup(ctx context.Context) (string, error) {
+func (r *Real) backup(ctx context.Context, reasons ...string) (string, error) {
 	stream, ok := r.Runner.(StreamRunner)
 	if !ok {
 		return "", errors.New("runner does not support streaming database backups")
@@ -302,7 +500,17 @@ func (r *Real) backup(ctx context.Context) (string, error) {
 		names = append(names, "mfa.env", "mfa.Caddyfile")
 	}
 	for _, name := range names {
-		data, e := os.ReadFile(filepath.Join(r.Stack, name))
+		source := filepath.Join(r.Stack, name)
+		if name == "compose.json" {
+			source = r.stackComposePath()
+		}
+		if name == "subscription.env" {
+			source = r.subEnvPath()
+			if r.state.Params.RemoteSubscription != nil {
+				continue
+			}
+		}
+		data, e := os.ReadFile(source)
 		if e != nil {
 			return "", e
 		}
@@ -313,6 +521,11 @@ func (r *Real) backup(ctx context.Context) (string, error) {
 	if protectionMode(r.state.Params) == "mfa" {
 		if err = r.backupMFAUsers(ctx, directory); err != nil {
 			return "", fmt.Errorf("incomplete MFA identity backup retained at %s: %w", directory, err)
+		}
+	}
+	if protectionMode(r.state.Params) == "tinyauth" {
+		if err = r.backupTinyAuth(ctx, directory); err != nil {
+			return "", err
 		}
 	}
 	if err = saveState(statePath(directory), r.state); err != nil {
@@ -342,6 +555,9 @@ func (r *Real) backup(ctx context.Context) (string, error) {
 		if e = writeFile(filepath.Join(directory, "node-jobs", entry.Name()), data, 0600); e != nil {
 			return "", e
 		}
+	}
+	if err = r.completeBackup(ctx, directory, reasons...); err != nil {
+		return "", err
 	}
 	if err = writeFile(filepath.Join(directory, "COMPLETE"), []byte("PostgreSQL custom-format dump and private configuration\n"), 0600); err != nil {
 		return "", err
@@ -380,10 +596,20 @@ func (r *Real) changeToken(ctx context.Context, token string) error {
 }
 
 func (r *Real) setComposeImage(service, image string) ([]byte, error) {
-	path := filepath.Join(r.Stack, "compose.json")
+	path := r.stackComposePath()
+	if service == "subscription" {
+		path = r.subComposePath()
+	}
 	old, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
+	}
+	if r.state.LayoutVersion >= officialLayout {
+		updated, e := patchComposeImage(old, officialService(r.state, service), image)
+		if e != nil {
+			return nil, e
+		}
+		return old, writeFile(path, updated, 0600)
 	}
 	var doc map[string]any
 	if err = json.Unmarshal(old, &doc); err != nil {

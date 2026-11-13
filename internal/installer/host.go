@@ -15,11 +15,27 @@ import (
 type Runner interface {
 	Run(context.Context, []byte, string, ...string) ([]byte, error)
 }
-type ExecRunner struct{ Log io.Writer }
+type ExecRunner struct {
+	Log    io.Writer
+	Redact func([]byte) string
+}
 
 // StreamRunner keeps database dumps out of memory and out of diagnostic logs.
 type StreamRunner interface {
 	RunTo(context.Context, io.Writer, string, ...string) error
+}
+
+type StreamInputRunner interface {
+	RunFrom(context.Context, io.Reader, string, ...string) error
+}
+
+func (r ExecRunner) RunFrom(ctx context.Context, input io.Reader, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	configureCommand(cmd)
+	cmd.WaitDelay = 5 * time.Second
+	cmd.Stdin = input
+	cmd.Stdout, cmd.Stderr = r.Log, r.Log
+	return cmd.Run()
 }
 
 func (r ExecRunner) RunTo(ctx context.Context, output io.Writer, name string, args ...string) error {
@@ -48,7 +64,11 @@ func (r ExecRunner) Run(ctx context.Context, input []byte, name string, args ...
 	err := cmd.Run()
 	data := captured.Bytes()
 	if r.Log != nil {
-		_, _ = fmt.Fprintf(r.Log, "[%s] %s: exit=%v\n%s\n", time.Now().Format(time.RFC3339), name, err, data)
+		output := string(data)
+		if r.Redact != nil {
+			output = r.Redact(data)
+		}
+		_, _ = fmt.Fprintf(r.Log, "[%s] %s: exit=%v\n%s\n", time.Now().Format(time.RFC3339), name, err, output)
 	}
 	if err != nil {
 		return data, fmt.Errorf("%s failed: %w", name, err)

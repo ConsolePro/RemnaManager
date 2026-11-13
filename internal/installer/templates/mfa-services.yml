@@ -1,0 +1,18 @@
+  # BEGIN RemnaManager authentication
+  mfa-gateway:
+    image: REPLACE_WITH_MFA_IMAGE
+    restart: always
+    env_file: mfa.env
+    ports:
+      - '127.0.0.1:3030:8080'
+    volumes:
+      - ./mfa.Caddyfile:/etc/caddy/Caddyfile:ro
+      - mfa-data:/data
+    networks:
+      - remnawave-network
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:8080/_rm_gateway_health']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  # END RemnaManager authentication

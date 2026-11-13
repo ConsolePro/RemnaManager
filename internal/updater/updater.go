@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-var Version = "v1.5.2"
+var Version = "v1.6.0"
 
 const Endpoint = "https://api.github.com/repos/ConsolePro/RemnaManager/releases/latest"
 

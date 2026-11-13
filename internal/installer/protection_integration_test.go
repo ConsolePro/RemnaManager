@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"github.com/ConsolePro/RemnaManager/internal/services"
 	"io"
 	"math/big"
 	"net"
@@ -38,9 +39,16 @@ func TestWriteProtectionFixture(t *testing.T) {
 	p := testParams()
 	p.PanelDomain, p.SubscriptionDomain = "panel.example.test", "sub.example.test"
 	p.Protection = "cookie"
+	if os.Getenv("RM_PROTECTION_REMOTE") == "1" {
+		p.RemoteSubscription = &services.SubscriptionRemote{User: "root", Proxy: "caddy"}
+	}
 	s, err := newState(p)
 	if err != nil {
 		t.Fatal(err)
+	}
+	s.SubToken = "fixture-subscription-token"
+	if os.Getenv("RM_PROTECTION_OFFICIAL") == "1" {
+		s.LayoutVersion = officialLayout
 	}
 	if err = saveState(statePath(root), s); err != nil {
 		t.Fatal(err)
@@ -111,23 +119,32 @@ threading.Event().wait()
 			services["mfa-gateway"] = map[string]any{"image": mfaImage, "env_file": []string{"mfa.env"}, "volumes": []string{"./mfa.Caddyfile:/etc/caddy/Caddyfile:ro", "mfa-data:/data"}, "healthcheck": map[string]any{"test": []string{"CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/_rm_gateway_health"}, "interval": "2s", "retries": 30}}
 		}
 		replace := func(text string) string {
-			for from, to := range map[string]string{"127.0.0.1:3000": "backend:3000", "127.0.0.1:3010": "backend:3010", "127.0.0.1:3020": "tinyauth:3000", "127.0.0.1:3030": "mfa-gateway:8080"} {
+			for from, to := range map[string]string{"127.0.0.1:3000": "backend:3000", "127.0.0.1:3010": "backend:3010", "127.0.0.1:3020": "tinyauth:3000", "127.0.0.1:3030": "mfa-gateway:8080", "remnawave:3000": "backend:3000", "subscription:3010": "backend:3010", "remnawave-subscription-page:3010": "backend:3010"} {
 				text = strings.ReplaceAll(text, from, to)
 			}
 			return text
 		}
 		for _, proxy := range []string{"nginx", "caddy"} {
 			name := proxy + "-" + mode
-			config := replace(RenderNginx(s, true))
-			image := "nginx:1.28-alpine"
+			s.Params.Proxy = proxy
+			config := replace(dockerProxyConfig(s, true))
+			image := "nginx:1.30-alpine"
+			if s.LayoutVersion >= officialLayout {
+				image = "nginx:1.30"
+			}
 			file, target := name+".conf", "/etc/nginx/conf.d/default.conf"
+			config = strings.ReplaceAll(config, "/etc/nginx/ssl/fullchain.pem", "/certs/cert.pem")
+			config = strings.ReplaceAll(config, "/etc/nginx/ssl/privkey.key", "/certs/key.pem")
 			for _, domain := range proxyDomains(s.Params) {
-				config = strings.ReplaceAll(config, "/etc/letsencrypt/live/"+domain+"/fullchain.pem", "/certs/cert.pem")
-				config = strings.ReplaceAll(config, "/etc/letsencrypt/live/"+domain+"/privkey.pem", "/certs/key.pem")
+				config = strings.ReplaceAll(config, "/etc/nginx/certs/"+domain+"/fullchain.pem", "/certs/cert.pem")
+				config = strings.ReplaceAll(config, "/etc/nginx/certs/"+domain+"/privkey.pem", "/certs/key.pem")
 			}
 			if proxy == "caddy" {
-				image, file, target = "caddy:2.10-alpine", name+".caddy", "/etc/caddy/Caddyfile"
-				config = replace(RenderCaddy(s))
+				image, file, target = "caddy:2-alpine", name+".caddy", "/etc/caddy/Caddyfile"
+				if s.LayoutVersion >= officialLayout {
+					image = "caddy:2.9"
+				}
+				config = replace(dockerProxyConfig(s, true))
 				for _, domain := range proxyDomains(s.Params) {
 					config = strings.ReplaceAll(config, domain+" {", domain+" {\n tls /certs/cert.pem /certs/key.pem")
 				}

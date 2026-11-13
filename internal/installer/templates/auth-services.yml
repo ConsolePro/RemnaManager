@@ -1,0 +1,17 @@
+  # BEGIN RemnaManager authentication
+  tinyauth:
+    image: ghcr.io/tinyauthapp/tinyauth:v5.2.0
+    restart: always
+    env_file: tinyauth.env
+    ports:
+      - '127.0.0.1:3020:3000'
+    volumes:
+      - tinyauth-data:/data
+    networks:
+      - remnawave-network
+    healthcheck:
+      test: ['CMD', 'tinyauth', 'healthcheck']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  # END RemnaManager authentication
