@@ -330,6 +330,8 @@ func (m Model) panelScreenView() string {
 		}
 		description := m.l("Операция изменит компоненты управляемого стека.", "This operation changes components in the managed stack.")
 		switch m.panelRequest.Action {
+		case "panel-firewall-repair":
+			description = m.l("Обновить firewall панели, чтобы HTTP/HTTPS проходили в Docker?\nСохраняются разрешённые порты SSH. Правила будут действовать после перезагрузки.", "Update the panel firewall to allow published HTTP/HTTPS into Docker?\nThe SSH allowlist is preserved. Rules persist across reboots.")
 		case "panel-proxy":
 			description = m.l("Будет создана резервная копия и проверена новая конфигурация.\nПри сбое HTTPS будет запущен прежний прокси.\nВозможен короткий простой. Существующие сертификаты сохраняются.\nПереход с системной службы на Docker выполняется только этой операцией.", "A backup and configuration validation precede switching.\nHTTPS failure restarts the previous proxy. Brief downtime is possible.\nCertificates are preserved. This explicitly migrates legacy system services to Docker.")
 			description += "\n" + m.l("В новом формате Nginx требует общий SAN-сертификат. Если его нет, будет запрошен новый общий сертификат через ACME.", "The new Nginx layout requires a shared SAN certificate. If absent, a new shared certificate will be requested through ACME.")

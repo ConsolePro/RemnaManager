@@ -15,6 +15,7 @@ func menu() []item {
 			operation("Перезапустить панель и компоненты", "Restart panel and components", "panel-restart"),
 			operation("Запустить панель и компоненты", "Start panel and components", "panel-start"),
 			operation("Доступ к панели", "Panel access", "panel-credentials"),
+			operation("Восстановить HTTPS в firewall", "Repair HTTPS firewall", "panel-firewall-repair"),
 			operation("Защита панели", "Panel protection", "panel-protection"),
 			operation("Сменить обратный прокси", "Change reverse proxy", "panel-proxy"),
 			group("Резервные копии и откат", "Backups and restore", operation("Создать копию", "Create backup", "panel-backup"), operation("Список копий", "List backups", "panel-backup-list"), operation("Проверить копию", "Verify backup", "panel-backup-verify"), operation("Восстановить БД и конфигурацию", "Restore database and configuration", "panel-restore"), operation("Удалить выбранную копию", "Delete selected backup", "panel-backup-delete")),

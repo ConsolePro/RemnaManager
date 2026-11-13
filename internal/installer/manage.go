@@ -297,6 +297,10 @@ func (r *Real) manage(ctx context.Context, request services.PanelRequest) (servi
 		if err == nil {
 			err = r.waitHTTPS(ctx)
 		}
+	case "panel-firewall-repair":
+		err = r.repairPanelFirewall(ctx)
+		result.Text = "Managed firewall updated: published HTTP/HTTPS can reach Docker. SSH ports were preserved. Open Panel access for the protected login link."
+		result.TextRU = "Firewall обновлён: опубликованные HTTP/HTTPS доступны в Docker. Порты SSH сохранены. Защищённая ссылка находится в разделе «Доступ к панели»."
 	case "sub-restart":
 		_, err = r.compose(ctx, "--profile", "subscription", "restart", "subscription")
 		if err == nil {

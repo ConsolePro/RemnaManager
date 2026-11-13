@@ -17,6 +17,32 @@ import (
 
 type protectionTransport func(*http.Request) (*http.Response, error)
 
+func TestInstallSummaryUsesProtectedAccessLink(t *testing.T) {
+	for _, mode := range []string{"cookie", "tinyauth", "mfa"} {
+		p := testParams()
+		p.Protection = mode
+		if mode == "tinyauth" {
+			p.AuthDomain = "auth." + p.PanelDomain
+		}
+		s, err := newState(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := NewReal()
+		r.state = s
+		text := r.Summary()
+		if !strings.Contains(text, "Panel: "+panelAccessURL(s)+"\n") {
+			t.Fatal("wrong access URL", mode)
+		}
+		if mode == "cookie" && !strings.Contains(text, "?"+s.CookieKey+"="+s.CookieValue) {
+			t.Fatal("Cookie access token missing")
+		}
+		if strings.Contains(text, s.AdminPassword) {
+			t.Fatal("initial password exposed in summary")
+		}
+	}
+}
+
 func (f protectionTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestProtectionSecretsPersistAndRemainSeparate(t *testing.T) {

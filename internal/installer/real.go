@@ -403,7 +403,7 @@ func (r *Real) Summary() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := r.state
-	return fmt.Sprintf("Panel: https://%s\nSubscription: https://%s/<shortUuid>\nProtection: %s\nUse Panel access to reveal the initial credentials.\nLog: %s", s.Params.PanelDomain, s.Params.SubscriptionDomain, protectionMode(s.Params), r.LogPath)
+	return fmt.Sprintf("Panel: %s\nSubscription: https://%s/<shortUuid>\nProtection: %s\nUse Panel access to reveal the initial credentials.\nLog: %s", panelAccessURL(s), s.Params.SubscriptionDomain, protectionMode(s.Params), r.LogPath)
 }
 func (r *Real) Close() error {
 	r.mu.Lock()

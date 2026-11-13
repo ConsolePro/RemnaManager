@@ -54,8 +54,10 @@ func FirewallRules(ports []int, caddy bool) string {
 		values[i] = strconv.Itoa(p)
 	}
 	webUDP := ""
+	forwardUDP := ""
 	if caddy {
 		webUDP = "udp dport 443 accept"
+		forwardUDP = "ct status dnat udp dport 443 ct original proto-dst 443 accept"
 	}
 	return fmt.Sprintf(`table inet %s {
  chain input {
@@ -74,12 +76,49 @@ func FirewallRules(ports []int, caddy bool) string {
   ct state established,related accept
   iifname "docker0" accept
   iifname "br-*" accept
+  ct status dnat tcp dport { 80, 443 } ct original proto-dst { 80, 443 } accept
+  %s
   oifname "docker0" drop
   oifname "br-*" drop
   ct status dnat drop
  }
 }
-`, firewallTable, strings.Join(values, ", "), webUDP)
+`, firewallTable, strings.Join(values, ", "), webUDP, forwardUDP)
+}
+
+// Repair the managed table and its boot-time policy together. The input policy
+// and saved SSH allowlist stay identical; Docker's own tables are untouched.
+func (r *Real) repairPanelFirewall(ctx context.Context) error {
+	if !r.state.FirewallOwned || !r.state.Ready || r.state.FirewallPending {
+		return errors.New("a completed, owned firewall is required")
+	}
+	previous, err := r.Runner.Run(ctx, nil, "nft", "list", "table", "inet", firewallTable)
+	if err != nil {
+		return err
+	}
+	activePath := filepath.Join(r.Root, "firewall-active.nft")
+	previousFile, err := os.ReadFile(activePath)
+	if err != nil {
+		return err
+	}
+	rules := FirewallRules(r.state.Params.SSHPorts, r.state.Params.Proxy == "caddy")
+	replacement := []byte("delete table inet " + firewallTable + "\n" + rules)
+	if _, err = r.Runner.Run(ctx, replacement, "nft", "-c", "-f", "-"); err != nil {
+		return err
+	}
+	if err = writeFile(activePath, []byte(rules), 0600); err != nil {
+		return err
+	}
+	if _, err = r.Runner.Run(ctx, replacement, "nft", "-f", "-"); err != nil {
+		// nft transactions are atomic. Restore the persisted file too, and use
+		// an independent context if cancellation happened during application.
+		restoreErr := writeFile(activePath, previousFile, 0600)
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, rollbackErr := r.Runner.Run(rollbackCtx, append([]byte("delete table inet "+firewallTable+"\n"), previous...), "nft", "-f", "-")
+		return errors.Join(err, restoreErr, rollbackErr)
+	}
+	return nil
 }
 
 // Refuse unknown input filtering rather than flushing another administrator's
