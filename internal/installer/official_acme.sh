@@ -14,7 +14,8 @@ if [[ ! -x $acme ]]; then
     curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 120 https://get.acme.sh -o "$installer"
     # Installation can report an account error; retry registration explicitly
     # only if the client itself was successfully installed.
-    sh "$installer" --home "$manager/acme" --config-home "$manager/acme" --accountemail "$email" || true
+    # get.acme.sh converts its first email=value argument into --email value.
+    sh "$installer" "email=$email" --home "$manager/acme" --config-home "$manager/acme" || true
     [[ -x $acme ]] || { echo 'acme.sh installation failed' >&2; exit 1; }
     rm -f "$installer"
 fi

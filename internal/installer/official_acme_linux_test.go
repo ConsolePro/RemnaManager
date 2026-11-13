@@ -10,6 +10,74 @@ import (
 	"testing"
 )
 
+func TestACMEFirstInstallationBootstrap(t *testing.T) {
+	for name, script := range map[string][]byte{"official": panelACMEScript, "legacy": legacyPanelACMEScript} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			manager := filepath.Join(root, "manager with spaces")
+			bin := filepath.Join(root, "bin")
+			if err := os.MkdirAll(bin, 0700); err != nil {
+				t.Fatal(err)
+			}
+			// Match get.acme.sh's first-argument conversion and forwarding contract.
+			bootstrap := `#!/bin/sh
+set -eu
+_email="$1"
+if [ "$_email" ]; then
+    shift
+    _email="--$(echo "$_email" | tr '=' ' ')"
+fi
+curl -L https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh | sh -s -- --install-online $_email "$@"
+`
+			client := `#!/bin/sh
+set -eu
+printf '%s\n' "$@" >> "$TEST_CALLS"
+if [ "$1" = --install-online ]; then
+    shift
+    [ "$1" = --email ] && [ "$2" = admin@example.test ] || exit 31
+    shift 2
+    [ "$1" = --home ] && [ "$2" = "$TEST_MANAGER/acme" ] || exit 32
+    shift 2
+    [ "$1" = --config-home ] && [ "$2" = "$TEST_MANAGER/acme" ] || exit 33
+    [ "$#" = 2 ] || exit 34
+    mkdir -p "$TEST_MANAGER/acme"
+    cp "$TEST_CLIENT_SOURCE" "$TEST_MANAGER/acme/acme.sh"
+    chmod 700 "$TEST_MANAGER/acme/acme.sh"
+    exit 0
+fi
+# Deliberately stop at registration: no external account or issuance in this test.
+exit 42
+`
+			curl := `#!/bin/sh
+set -eu
+if [ "$1" = -L ]; then
+    cat "$TEST_CLIENT_SOURCE"
+else
+    while [ "$1" != -o ]; do shift; done
+    cp "$TEST_BOOTSTRAP" "$2"
+fi
+`
+			files := map[string]string{"bootstrap.sh": bootstrap, "client.sh": client, "bin/curl": curl, "issue.sh": string(script)}
+			for path, content := range files {
+				if err := os.WriteFile(filepath.Join(root, path), []byte(content), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			command := exec.Command("bash", filepath.Join(root, "issue.sh"), manager, filepath.Join(root, "stack"), "admin@example.test", "zerossl", "panel.example.test,sub.example.test")
+			command.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "TEST_MANAGER="+manager,
+				"TEST_BOOTSTRAP="+filepath.Join(root, "bootstrap.sh"), "TEST_CLIENT_SOURCE="+filepath.Join(root, "client.sh"), "TEST_CALLS="+filepath.Join(root, "calls"))
+			output, err := command.CombinedOutput()
+			calls, readErr := os.ReadFile(filepath.Join(root, "calls"))
+			if err == nil || readErr != nil || !strings.Contains(string(calls), "--register-account\n") || strings.Contains(string(calls), "--issue\n") {
+				t.Fatalf("bootstrap did not reach registration safely: err=%v, calls=%s, output=%s", err, calls, output)
+			}
+			if _, err := os.Stat(filepath.Join(manager, "acme", "acme.sh")); err != nil {
+				t.Fatal("client was not installed in the configured home:", err)
+			}
+		})
+	}
+}
+
 func TestOfficialACMERegistrationFallbackAndSharedSAN(t *testing.T) {
 	for _, scenario := range []string{"ok", "zero-fails", "zero-missing-url", "all-fail"} {
 		t.Run(scenario, func(t *testing.T) {

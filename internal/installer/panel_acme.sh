@@ -11,7 +11,8 @@ if [[ ! -x $acme ]]; then
     installer=$(mktemp)
     trap 'rm -f "$installer"' EXIT
     curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 120 https://get.acme.sh -o "$installer"
-    sh "$installer" --home "$manager/acme" --config-home "$manager/acme" --accountemail "$email"
+    # get.acme.sh converts its first email=value argument into --email value.
+    sh "$installer" "email=$email" --home "$manager/acme" --config-home "$manager/acme"
     [[ -x $acme ]] || { echo 'acme.sh installation failed' >&2; exit 1; }
 fi
 "$acme" --register-account --home "$manager/acme" --server "$ca" -m "$email"
