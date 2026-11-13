@@ -190,6 +190,23 @@ func (r *Real) manage(ctx context.Context, request services.PanelRequest) (servi
 		}, nil
 	}
 	s := r.state
+	if s.ConfigurationBackup != "" && request.Action != "panel-domains" && request.Action != "panel-certificates" {
+		return result, errors.New("configuration recovery pending; retry Change domains or Certificates and renewal")
+	}
+	if request.Action == "panel-domains" || request.Action == "panel-certificates" {
+		if s.RecoveryBackup != "" || s.ProxyRecovery != "" || s.SubRecovery != "" || s.ProtectionPending {
+			return result, errors.New("finish pending backend, proxy, subscription or protection recovery before editing configuration")
+		}
+		recovering := s.ConfigurationBackup != ""
+		err := r.changePanelConfiguration(ctx, request)
+		if err != nil {
+			return result, err
+		}
+		if recovering {
+			return services.PanelResult{Text: "Previous configuration restored; repeat the operation to apply new settings.", TextRU: "Предыдущая конфигурация восстановлена. Повторите операцию для применения новых параметров."}, err
+		}
+		return services.PanelResult{Text: "Configuration applied and HTTPS verified.", TextRU: "Конфигурация применена, HTTPS проверен."}, err
+	}
 	var err error
 	if s.Params.RemoteSubscription != nil && strings.HasPrefix(request.Action, "sub-") {
 		switch request.Action {
@@ -435,7 +452,10 @@ func (r *Real) composeArgs(args ...string) []string {
 
 func (r *Real) safeOutput(data []byte) string {
 	text := ansi.Strip(string(data))
-	for _, secret := range []string{r.state.DBPassword, r.state.AppSecret, r.state.MetricsPassword, r.state.WebhookSecret, r.state.AdminPassword, r.state.ManagerToken, r.state.SubToken, r.state.CookieKey, r.state.CookieValue, r.state.TinyPassword, r.state.TinyHash, r.state.MFAPassword, r.state.MFASigningKey} {
+	if remote := r.state.Params.RemoteSubscription; remote != nil && remote.Password != "" {
+		text = strings.ReplaceAll(text, remote.Password, "[REDACTED]")
+	}
+	for _, secret := range []string{r.state.DBPassword, r.state.AppSecret, r.state.MetricsPassword, r.state.WebhookSecret, r.state.AdminPassword, r.state.ManagerToken, r.state.SubToken, r.state.CookieKey, r.state.CookieValue, r.state.TinyPassword, r.state.TinyHash, r.state.MFAPassword, r.state.MFASigningKey, r.state.Params.Certificate.Token} {
 		if secret != "" {
 			text = strings.ReplaceAll(text, secret, "[REDACTED]")
 		}

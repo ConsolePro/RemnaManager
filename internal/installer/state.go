@@ -28,6 +28,8 @@ type State struct {
 	BackendTag, SubImage                         string
 	SubSource                                    string
 	LayoutVersion                                int
+	TemplateVersion                              string
+	ConfigurationBackup                          string
 	ProxyRecovery, ProxyTarget, ProtectionBackup string
 	// Empty on installations created before Docker proxy support.
 	ProxyRuntime                                                         string
@@ -95,6 +97,9 @@ func saveState(path string, s State) error {
 }
 
 func ValidateParameters(p services.PanelParameters) error {
+	if err := ValidateCertificateParameters(p); err != nil {
+		return err
+	}
 	if panelCA(p) != "letsencrypt" && panelCA(p) != "zerossl" {
 		return errors.New("certificate authority must be letsencrypt or zerossl")
 	}

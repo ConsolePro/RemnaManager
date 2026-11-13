@@ -48,6 +48,16 @@ func encodeState(path string, s State) ([]byte, error) {
 		secrets[name] = field.String()
 		field.SetString("")
 	}
+	if s.DetachedSubscription != nil {
+		secrets["DetachedDNSAPIToken"] = s.DetachedSubscription.Certificate.Token
+		if s.DetachedSubscription.RemoteSubscription != nil {
+			secrets["DetachedSSHPassword"] = s.DetachedSubscription.RemoteSubscription.Password
+		}
+	}
+	secrets["DNSAPIToken"] = s.Params.Certificate.Token
+	if s.Params.RemoteSubscription != nil {
+		secrets["SubscriptionSSHPassword"] = s.Params.RemoteSubscription.Password
+	}
 	aead, err := stateCipher(path, true)
 	if err != nil {
 		return nil, err
@@ -114,6 +124,16 @@ func decodeState(path string, data []byte, s *State) error {
 	value := reflect.ValueOf(s).Elem()
 	for _, name := range stateSecretFields {
 		value.FieldByName(name).SetString(secrets[name])
+	}
+	if s.DetachedSubscription != nil {
+		s.DetachedSubscription.Certificate.Token = secrets["DetachedDNSAPIToken"]
+		if s.DetachedSubscription.RemoteSubscription != nil {
+			s.DetachedSubscription.RemoteSubscription.Password = secrets["DetachedSSHPassword"]
+		}
+	}
+	s.Params.Certificate.Token = secrets["DNSAPIToken"]
+	if s.Params.RemoteSubscription != nil {
+		s.Params.RemoteSubscription.Password = secrets["SubscriptionSSHPassword"]
 	}
 	return nil
 }

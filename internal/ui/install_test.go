@@ -67,12 +67,10 @@ func TestRealWizardRequiresExplicitFirewallConfirmation(t *testing.T) {
 	next, _ := m.Update(cmd())
 	m = next.(Model)
 	press(&m, tea.KeyEnter)
-	if m.screen != "installOptions" {
+	if m.screen != "installLayout" {
 		t.Fatal(m.screen)
 	}
-	press(&m, tea.KeyRight)
-	press(&m, tea.KeyEnter)
-	press(&m, tea.KeyEnter) // Default Cookie protection.
+	press(&m, tea.KeyEnter) // One server.
 	if len(m.inputs) != 4 || m.inputs[3].Value() != "2222" {
 		t.Fatal("effective SSH port was not prefilled")
 	}
@@ -81,6 +79,14 @@ func TestRealWizardRequiresExplicitFirewallConfirmation(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		press(&m, tea.KeyEnter)
 	}
+	if m.screen != "installOptions" {
+		t.Fatal(m.screen)
+	}
+	press(&m, tea.KeyRight)
+	press(&m, tea.KeyEnter)
+	preflight := press(&m, tea.KeyEnter)
+	next, _ = m.Update(preflight())
+	m = next.(Model)
 	if m.screen != "confirm" || !strings.Contains(m.body(), "РЕАЛЬНАЯ УСТАНОВКА") || !strings.Contains(m.body(), "2222") {
 		t.Fatal(m.screen, m.body())
 	}
@@ -180,31 +186,32 @@ func TestTinyAuthWizardAndSwitchBackToCookie(t *testing.T) {
 	m := testModel(t, true)
 	m.service = &liveFake{}
 	m.prepareInstallInputs()
+	m.inputs[0].SetValue("panel.example.com")
+	m.inputs[1].SetValue("sub.example.com")
+	m.proxyChoice = 1
 	m.screen = "installOptions"
 	press(&m, tea.KeyEnter)
 	if m.screen != "protectionOptions" || m.protectionChoice != 0 {
-		t.Fatal("Cookie must be the default protection")
+		t.Fatal(m.screen)
 	}
 	press(&m, tea.KeyDown)
 	press(&m, tea.KeyEnter)
-	if m.screen != "domains" || len(m.inputs) != 5 {
-		t.Fatal("TinyAuth domain field missing")
+	if m.screen != "protectionDetails" {
+		t.Fatal(m.screen)
 	}
-	for i, value := range []string{"panel.example.com", "sub.example.com", "admin", "2222", "auth.panel.example.com"} {
-		m.inputs[i].SetValue(value)
+	cmd := press(&m, tea.KeyEnter)
+	next, _ := m.Update(cmd())
+	m = next.(Model)
+	if m.screen != "confirm" || m.parameters().AuthDomain != "auth.panel.example.com" {
+		t.Fatal(m.screen, m.parameters())
 	}
-	for range m.inputs {
-		press(&m, tea.KeyEnter)
-	}
-	if m.screen != "confirm" || m.parameters().Protection != "tinyauth" || m.parameters().AuthDomain != "auth.panel.example.com" {
-		t.Fatal("TinyAuth parameters were lost")
-	}
-	press(&m, tea.KeyEsc)
 	press(&m, tea.KeyEsc)
 	press(&m, tea.KeyUp)
-	press(&m, tea.KeyEnter)
-	if m.screen != "domains" || len(m.inputs) != 4 || m.focus != 0 || m.parameters().Protection != "cookie" || m.parameters().AuthDomain != "" {
-		t.Fatal("switching protection left stale TinyAuth fields")
+	cmd = press(&m, tea.KeyEnter)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if m.screen != "confirm" || len(m.inputs) != 4 || m.parameters().Protection != "cookie" || m.parameters().AuthDomain != "" {
+		t.Fatal(m.screen, m.parameters())
 	}
 }
 
@@ -225,7 +232,7 @@ func TestAllThreeProtectionChoicesWithBothProxies(t *testing.T) {
 				if p.Protection != mode {
 					t.Fatal("incorrect protection mode")
 				}
-				if choice == 1 && len(m.inputs) != 5 {
+				if choice == 1 && m.screen != "protectionDetails" {
 					t.Fatal("TinyAuth needs a domain")
 				}
 				if choice != 1 && (len(m.inputs) != 4 || p.AuthDomain != "") {

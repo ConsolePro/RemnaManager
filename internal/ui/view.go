@@ -149,6 +149,8 @@ func (m Model) body() string {
 		return m.panelScreenView()
 	case "notice":
 		return m.notice + "\n\n" + m.l("Enter / Esc — в меню", "Enter / Esc — return to menu")
+	case "installLayout", "certificateOptions", "certificateInput", "protectionDetails", "installPreflight":
+		return m.installWizardView()
 	case "installOptions":
 		return m.installOptionsView()
 	case "protectionOptions":

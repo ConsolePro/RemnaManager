@@ -95,6 +95,11 @@ type Model struct {
 	customChoice                                       int
 	installRemote, remoteInstallWizard                 bool
 	certificateAuthority                               string
+	certificateChoice                                  int
+	editingCertificates                                bool
+	certificateDraft                                   services.CertificateParameters
+	wizardInputs                                       []textinput.Model
+	preflightSummary                                   string
 	remoteDraft                                        services.SubscriptionRemote
 	remoteFingerprint                                  string
 	panelInstallInputs                                 []textinput.Model
@@ -175,6 +180,16 @@ func (m *Model) startSettings(editing bool) {
 }
 func (m *Model) back() {
 	if m.screen == "panelRemoteInput" || m.screen == "panelRemoteTrust" {
+		if m.screen == "panelRemoteInput" && len(m.inputs) >= 4 {
+			m.remoteDraft.SSH.Host = strings.TrimSpace(m.inputs[0].Value())
+			if port, err := installer.ParsePorts(m.inputs[1].Value()); err == nil {
+				m.remoteDraft.SSH.Port = port[0]
+			}
+			m.remoteDraft.User = strings.TrimSpace(m.inputs[2].Value())
+			if m.remoteInstallWizard {
+				m.remoteDraft.Password = m.inputs[3].Value()
+			}
+		}
 		m.remoteDraft.SSH.HostKey = ""
 		if m.remoteInstallWizard {
 			m.inputs = m.panelInstallInputs
@@ -327,14 +342,48 @@ func (m *Model) back() {
 		m.screen = "menu"
 	case "domains":
 		if m.liveInstall() {
-			m.screen = "protectionOptions"
+			m.screen = "installLayout"
 		} else {
 			m.screen = "environment"
 		}
-	case "installOptions":
+	case "installLayout":
 		m.screen = "environment"
+	case "installOptions":
+		m.screen = "domains"
+	case "certificateOptions":
+		m.screen = "installOptions"
+		if m.editingCertificates {
+			m.screen = "menu"
+			m.editingCertificates = false
+		}
+	case "certificateInput":
+		if m.certificateChoice == 4 && len(m.inputs) >= 2 {
+			m.certificateDraft.CertificateFile = m.inputs[0].Value()
+			m.certificateDraft.KeyFile = m.inputs[1].Value()
+			if len(m.inputs) > 3 {
+				m.certificateDraft.RemoteCertificateFile = m.inputs[2].Value()
+				m.certificateDraft.RemoteKeyFile = m.inputs[3].Value()
+			}
+		} else if len(m.inputs) > 0 {
+			m.certificateDraft.Token = m.inputs[0].Value()
+		}
+		m.inputs = m.wizardInputs
+		m.screen = "certificateOptions"
+	case "protectionDetails":
+		value := m.inputs[0].Value()
+		m.inputs = m.wizardInputs
+		m.inputs = m.inputs[:4]
+		m.inputs = append(m.inputs, newInput("auth.panel.example.com", value))
+		m.screen = "protectionOptions"
+	case "installPreflight":
+		m.cancelInstall()
+		m.run++
+		m.screen = "protectionOptions"
 	case "protectionOptions":
 		m.screen = "installOptions"
+		if m.proxyChoice == 0 {
+			m.screen = "certificateOptions"
+		}
 	case "panelProtection":
 		m.screen = "menu"
 	case "panelInput":
@@ -344,7 +393,7 @@ func (m *Model) back() {
 			m.screen = "menu"
 		}
 	case "confirm":
-		m.screen = "domains"
+		m.screen = "protectionOptions"
 		m.inputs[m.focus].Focus()
 	case "progress":
 		m.cancelInstall()
@@ -360,6 +409,9 @@ func (m *Model) back() {
 	m.viewport.GotoTop()
 }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if result, cmd, handled := m.updateInstallWizard(msg); handled {
+		return result, cmd
+	}
 	switch msg := msg.(type) {
 	case routingMsg:
 		return m.receiveRouting(msg)
@@ -500,6 +552,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch m.screen {
 		case "menu":
+			if key == "l" {
+				return m.openPanelOperation(operation("Изменить домены", "Change domains", "panel-domains"))
+			}
 			f := &m.frames[len(m.frames)-1]
 			switch key {
 			case "up", "shift+tab":
@@ -588,7 +643,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if key == "enter" && m.environment != "" && m.problem == "" {
 				m.prepareInstallInputs()
 				if m.liveInstall() {
-					m.screen = "installOptions"
+					m.screen = "installLayout"
 					return m, nil
 				}
 				m.screen = "domains"
@@ -611,14 +666,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.inputs[m.focus].Focus()
 				}
 				p := m.parameters()
-				if m.liveInstall() {
-					check := p
-					check.RemoteSubscription = nil
-					if err := installer.ValidateParameters(check); err != nil {
-						m.problem = m.errorText(err)
-						break
-					}
-				}
+
 				if !installer.ValidDomain(p.PanelDomain) || !installer.ValidDomain(p.SubscriptionDomain) || p.PanelDomain == p.SubscriptionDomain {
 					m.problem = m.l("Укажите два разных домена без https:// и пути (IDN: punycode).", "Enter two different domains without https:// or path (IDN: punycode).")
 					break
@@ -630,6 +678,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.openRemoteInputs()
 				}
 				m.screen = "confirm"
+				if m.liveInstall() {
+					m.screen = "installOptions"
+				}
 			}
 		case "confirm":
 			if key == "enter" {
@@ -650,32 +701,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "notice":
 			if key == "enter" {
 				m.screen = "menu"
-			}
-		case "installOptions":
-			if key == "a" {
-				if m.certificateAuthority == "zerossl" {
-					m.certificateAuthority = "letsencrypt"
-				} else {
-					m.certificateAuthority = "zerossl"
-				}
-			}
-			if key == "s" {
-				m.installRemote = !m.installRemote
-			}
-			if key == "left" || key == "right" || key == "up" || key == "down" || key == "tab" || key == "shift+tab" {
-				m.proxyChoice = 1 - m.proxyChoice
-			}
-			if key == "enter" {
-				m.screen = "protectionOptions"
-			}
-		case "protectionOptions":
-			if key == "left" || key == "right" || key == "up" || key == "down" || key == "tab" || key == "shift+tab" {
-				m.moveProtectionChoice(key)
-			}
-			if key == "enter" {
-				m.prepareProtectionInput()
-				m.screen = "domains"
-				return m, m.inputs[0].Focus()
 			}
 		case "firewallVerify":
 			if key == "enter" && m.problem == "" {

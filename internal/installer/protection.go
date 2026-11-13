@@ -160,6 +160,12 @@ func accessDetails(s State, root string, ru bool) string {
 		} else {
 			text += "\nEnroll a second factor on first login. API keys: /r/settings/apikeys."
 		}
+	} else if s.CookieKey != "" {
+		if ru {
+			text += "\nДля входа откройте секретную ссылку. Не передавайте её посторонним."
+		} else {
+			text += "\nOpen the secret link to enter. Keep it private."
+		}
 	} else if s.CookieKey == "" {
 		if ru {
 			text += "\nСтарая установка без Cookie-защиты. Выберите «Защита панели»."

@@ -40,6 +40,16 @@ func (m *Model) prepareInstallInputs() {
 		p = s.Defaults()
 	}
 	m.installRemote = p.RemoteSubscription != nil
+	m.remoteInstallWizard = false
+	m.editingCertificates = false
+	m.preflightSummary = ""
+	m.certificateDraft = p.Certificate
+	m.certificateChoice = 0
+	for i, method := range certificateMethods {
+		if method == p.Certificate.Method {
+			m.certificateChoice = i
+		}
+	}
 	m.certificateAuthority = p.CertificateAuthority
 	if m.certificateAuthority == "" {
 		m.certificateAuthority = "zerossl"
@@ -47,9 +57,9 @@ func (m *Model) prepareInstallInputs() {
 	if p.RemoteSubscription != nil {
 		m.remoteDraft = *p.RemoteSubscription
 	}
-	m.proxyChoice = 0
-	if p.Proxy == "caddy" {
-		m.proxyChoice = 1
+	m.proxyChoice = 1
+	if p.Proxy == "nginx" {
+		m.proxyChoice = 0
 	}
 	m.protectionChoice = 0
 	for i, mode := range protectionChoices {
@@ -68,20 +78,31 @@ func (m *Model) prepareInstallInputs() {
 	m.focus = 0
 }
 func (m Model) installationParameters() services.PanelParameters {
+	if m.screen == "protectionDetails" || m.screen == "certificateInput" {
+		m.inputs = m.wizardInputs
+	}
 	p := services.PanelParameters{PanelDomain: strings.ToLower(strings.TrimSpace(m.inputs[0].Value())), SubscriptionDomain: strings.ToLower(strings.TrimSpace(m.inputs[1].Value()))}
 	if m.liveInstall() && len(m.inputs) >= 4 {
 		p.Proxy = []string{"nginx", "caddy"}[m.proxyChoice]
 		p.Email = m.cfg.Email
 		p.CertificateAuthority = m.certificateAuthority
+		p.Certificate = m.certificateDraft
+		if p.Proxy == "caddy" {
+			p.Certificate = services.CertificateParameters{}
+		}
 		p.Admin = strings.TrimSpace(m.inputs[2].Value())
 		p.SSHPorts, _ = installer.ParsePorts(m.inputs[3].Value())
 		p.Protection = protectionChoices[m.protectionChoice]
 		if m.installRemote {
 			remote := m.remoteDraft
+			remote.Proxy = p.Proxy
 			p.RemoteSubscription = &remote
 		}
-		if p.Protection == "tinyauth" && len(m.inputs) > 4 {
-			p.AuthDomain = strings.ToLower(strings.TrimSpace(m.inputs[4].Value()))
+		if p.Protection == "tinyauth" {
+			p.AuthDomain = "auth." + p.PanelDomain
+			if len(m.inputs) > 4 {
+				p.AuthDomain = strings.ToLower(strings.TrimSpace(m.inputs[4].Value()))
+			}
 		}
 	}
 	return p
@@ -126,28 +147,11 @@ func (m Model) confirmFirewall() tea.Cmd {
 	return func() tea.Msg { return confirmedInstallMsg{service.Confirm(m.ctx)} }
 }
 func (m Model) installOptionsView() string {
-	lines := []string{m.l("Обратный прокси", "Reverse proxy"), ""}
-	for i, proxy := range []string{"Nginx Docker + acme.sh", m.l("Caddy Docker (автоматический HTTPS)", "Caddy Docker (automatic HTTPS)")} {
-		row := "  " + proxy
-		if i == m.proxyChoice {
-			row = accent.Render("› " + proxy)
-		}
-		lines = append(lines, row)
-	}
-	if s, ok := m.liveInstaller(); ok && s.Defaults().PanelDomain != "" {
-		lines = append(lines, "", m.l("Продолжение установки: сохраните прежние домены, прокси и логин.", "Resuming installation: keep the saved domains, proxy and login."))
-	}
-	layout := m.l("Один сервер", "One server")
-	if m.installRemote {
-		layout = m.l("Два сервера (подписка через SSH)", "Two servers (subscription over SSH)")
-	}
-	lines = append(lines, "", layout, m.l("S — изменить размещение подписки", "S — change subscription placement"))
-	lines = append(lines, "ACME: "+m.certificateAuthority, m.l("A — Let's Encrypt / ZeroSSL (Nginx)", "A — Let's Encrypt / ZeroSSL (Nginx)"))
-	return strings.Join(lines, "\n") + "\n\n" + m.l("↑/↓ или Tab — выбор · Enter — параметры", "↑/↓ or Tab — select · Enter — parameters")
+	return m.choiceView(m.l("Выберите обратный прокси", "Choose reverse proxy"), []string{"Caddy", "Nginx"}, 1-m.proxyChoice, m.l("Caddy автоматически получает и продлевает HTTPS-сертификаты.", "Caddy obtains and renews HTTPS certificates automatically."))
 }
 func (m Model) realDomainsView() string {
 	labels := [][2]string{{"Домен панели", "Panel domain"}, {"Домен подписки", "Subscription domain"}, {"Администратор", "Administrator"}, {"Разрешённые SSH-порты", "SSH ports to preserve"}}
-	if m.protectionChoice == 1 {
+	if m.protectionChoice == 1 && len(m.inputs) > 4 {
 		labels = append(labels, [2]string{"Домен TinyAuth (прямой поддомен панели)", "TinyAuth domain (direct child of panel domain)"})
 	}
 	lines := []string{accent.Render(m.l("Параметры установки", "Installation parameters")), ""}
@@ -159,5 +163,9 @@ func (m Model) realDomainsView() string {
 }
 func (m Model) realConfirmationView() string {
 	p := m.parameters()
-	return accent.Render(m.l("РЕАЛЬНАЯ УСТАНОВКА", "REAL INSTALLATION")) + fmt.Sprintf("\n\nPanel: %s\nSubscription: %s\nProxy: %s\nProtection: %s\nTinyAuth domain: %s\nAdmin: %s\nACME email: %s\nSSH TCP: %v\n", p.PanelDomain, p.SubscriptionDomain, p.Proxy, p.Protection, p.AuthDomain, p.Admin, p.Email, p.SSHPorts) + "\n" + warning.Render(m.l("Будут установлены пакеты и контейнеры, настроены HTTPS и firewall.\nНовые входящие соединения: только SSH, TCP 80/443; Caddy также UDP 443.\nДругие входящие порты будут закрыты, существующие соединения сохранятся.", "Packages, containers, HTTPS and firewall will be configured.\nNew inbound connections: SSH, TCP 80/443; Caddy also UDP 443.\nOther inbound ports will be blocked; existing connections remain.")) + "\n\n" + m.l("Enter — начать установку · Esc — отменить", "Enter — begin installation · Esc — cancel")
+	layout := m.l("На одном сервере", "One server")
+	if p.RemoteSubscription != nil {
+		layout = fmt.Sprintf("%s: %s@%s:%d", m.l("На разных серверах", "Separate servers"), p.RemoteSubscription.User, p.RemoteSubscription.SSH.Host, p.RemoteSubscription.SSH.Port)
+	}
+	return m.preflightSummary + "\n\n" + layout + "\nSSL: " + certificateLabel(p) + "\n" + accent.Render(m.l("РЕАЛЬНАЯ УСТАНОВКА", "REAL INSTALLATION")) + fmt.Sprintf("\n\nPanel: %s\nSubscription: %s\nProxy: %s\nProtection: %s\nTinyAuth domain: %s\nAdmin: %s\nACME email: %s\nSSH TCP: %v\n", p.PanelDomain, p.SubscriptionDomain, p.Proxy, p.Protection, p.AuthDomain, p.Admin, p.Email, p.SSHPorts) + "\n" + warning.Render(m.l("Будут установлены пакеты и контейнеры, настроены HTTPS и firewall.\nНовые входящие соединения: только SSH, TCP 80/443; Caddy также UDP 443.\nДругие входящие порты будут закрыты, существующие соединения сохранятся.", "Packages, containers, HTTPS and firewall will be configured.\nNew inbound connections: SSH, TCP 80/443; Caddy also UDP 443.\nOther inbound ports will be blocked; existing connections remain.")) + "\n\n" + m.l("Enter — начать установку · Esc — отменить", "Enter — begin installation · Esc — cancel")
 }

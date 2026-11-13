@@ -10,13 +10,15 @@ func operation(ru, en, action string) item       { return item{ru: ru, en: en, a
 func group(ru, en string, children ...item) item { return item{ru: ru, en: en, children: children} }
 func menu() []item {
 	return []item{
-		group("Панель и компоненты", "Panel and components",
-			item{ru: "Установить панель", en: "Install panel", action: "install"},
+		group("Управление панелью", "Panel management",
+			item{ru: "Панель и страница подписки", en: "Panel and subscription page", action: "install"},
 			operation("Перезапустить панель и компоненты", "Restart panel and components", "panel-restart"),
 			operation("Запустить панель и компоненты", "Start panel and components", "panel-start"),
 			operation("Доступ к панели", "Panel access", "panel-credentials"),
 			operation("Восстановить HTTPS в firewall", "Repair HTTPS firewall", "panel-firewall-repair"),
 			operation("Защита панели", "Panel protection", "panel-protection"),
+			operation("Изменить домены (L)", "Change domains (L)", "panel-domains"),
+			operation("Сертификаты и продление", "Certificates and renewal", "panel-certificates"),
 			operation("Сменить обратный прокси", "Change reverse proxy", "panel-proxy"),
 			group("Резервные копии и откат", "Backups and restore", operation("Создать копию", "Create backup", "panel-backup"), operation("Список копий", "List backups", "panel-backup-list"), operation("Проверить копию", "Verify backup", "panel-backup-verify"), operation("Восстановить БД и конфигурацию", "Restore database and configuration", "panel-restore"), operation("Удалить выбранную копию", "Delete selected backup", "panel-backup-delete")),
 			operation("Версия панели и обновления", "Panel version and releases", "panel-version"),

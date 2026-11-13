@@ -86,6 +86,19 @@ func (r *Real) completeBackup(ctx context.Context, directory string, reasons ...
 	if len(reasons) > 0 {
 		reason = reasons[0]
 	}
+	if reason == "pre-panel-configuration" {
+		for _, name := range []string{"acme", "dns-token.key", "dns-token.enc", "renew-dns.sh", "reload-nginx.sh", "acme-relay.sh"} {
+			source := filepath.Join(r.Root, name)
+			if _, e := os.Stat(source); os.IsNotExist(e) {
+				continue
+			} else if e != nil {
+				return e
+			}
+			if e := snapshotConfigurationFile(source, filepath.Join(directory, "renewal", name)); e != nil {
+				return e
+			}
+		}
+	}
 	if r.state.ProxyRuntime == "docker" {
 		for _, proxy := range []string{"nginx", "caddy"} {
 			source := filepath.Join(r.Stack, proxy)

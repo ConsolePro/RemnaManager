@@ -23,6 +23,12 @@ func (m Model) openRemoteInputs() (tea.Model, tea.Cmd) {
 		remote.Proxy = "caddy"
 	}
 	m.inputs = []textinput.Model{newInput("subscription-server.example.com", remote.SSH.Host), newInput("22", strconv.Itoa(remote.SSH.Port)), newInput("root", remote.User), newInput("/root/.ssh/id_ed25519", remote.SSH.IdentityFile), newInput("nginx / caddy", remote.Proxy)}
+	if m.remoteInstallWizard {
+		m.inputs = m.inputs[:3]
+		password := newInput("", remote.Password)
+		password.EchoMode = textinput.EchoPassword
+		m.inputs = append(m.inputs, password)
+	}
 	m.focus = 0
 	m.problem = ""
 	m.screen = "panelRemoteInput"
@@ -37,7 +43,7 @@ func (m Model) updateRemoteInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.inputs = m.panelInstallInputs
 				m.focus = 0
 				m.panelInstallInputs = nil
-				m.screen = "confirm"
+				m.screen = "installOptions"
 				return m, nil
 			}
 			m.panelRequest = services.PanelRequest{Action: "sub-ssh-save", Remote: m.remoteDraft, Fingerprint: m.remoteFingerprint}
@@ -65,7 +71,20 @@ func (m Model) updateRemoteInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.problem = m.l("Некорректный SSH-порт", "Invalid SSH port")
 			return m, nil
 		}
-		remote := services.SubscriptionRemote{SSH: services.NodeSSH{Host: strings.TrimSpace(m.inputs[0].Value()), Port: port, IdentityFile: strings.TrimSpace(m.inputs[3].Value())}, User: strings.TrimSpace(m.inputs[2].Value()), Proxy: strings.ToLower(strings.TrimSpace(m.inputs[4].Value()))}
+		proxy := "caddy"
+		identity := ""
+		password := ""
+		if m.remoteInstallWizard {
+			password = m.inputs[3].Value()
+			if password == "" {
+				m.problem = m.l("Введите пароль SSH.", "Enter the SSH password.")
+				return m, nil
+			}
+		} else {
+			identity = strings.TrimSpace(m.inputs[3].Value())
+			proxy = strings.ToLower(strings.TrimSpace(m.inputs[4].Value()))
+		}
+		remote := services.SubscriptionRemote{Password: password, SSH: services.NodeSSH{Host: strings.TrimSpace(m.inputs[0].Value()), Port: port, IdentityFile: identity}, User: strings.TrimSpace(m.inputs[2].Value()), Proxy: proxy}
 		if err = installer.ValidateSubscriptionRemote(remote); err != nil {
 			m.problem = m.errorText(err)
 			return m, nil
@@ -85,6 +104,9 @@ func (m Model) remoteInputView() string {
 	}
 	rows := []string{accent.Render(m.l("Удалённая страница подписки", "Remote subscription page")), ""}
 	labels := []string{m.l("SSH-сервер", "SSH host"), m.l("SSH-порт", "SSH port"), m.l("Пользователь (root или sudo без пароля)", "User (root or passwordless sudo)"), m.l("Путь к приватному ключу (пусто — ssh-agent)", "Private key path (empty for ssh-agent)"), m.l("Прокси удалённого сервера", "Remote server proxy")}
+	if m.remoteInstallWizard {
+		labels = append(labels[:3], m.l("Пароль SSH", "SSH password"))
+	}
 	for i, label := range labels {
 		rows = append(rows, label+": "+m.inputs[i].View())
 	}

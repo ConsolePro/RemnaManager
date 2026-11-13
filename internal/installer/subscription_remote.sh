@@ -17,9 +17,11 @@ required_ports="80|443|3010"
 if [[ $layout -ge 2 && $proxy == nginx ]]; then required_ports="443|8443|3010"; fi
 [[ $(id -u) == 0 ]] || { echo 'root or passwordless sudo required' >&2; exit 10; }
 case "$proxy" in nginx|caddy) ;; *) exit 2;; esac
+if [[ $action != preflight ]]; then
 mkdir -p "$manager"
 exec 9>"$manager/operation.lock"
 flock -n 9 || { echo 'another remote subscription operation is running' >&2; exit 11; }
+fi
 compose() { docker compose --project-directory "$stack/subscription" -f "$stack/subscription/docker-compose.yml" "$@"; }
 proxy_compose() { docker compose --project-directory "$stack/$proxy" -f "$stack/$proxy/docker-compose.yml" "$@"; }
 owned() { [[ -f $stack/.remnamanager-subscription && $(cat "$stack/.remnamanager-subscription") == managed ]] || { echo 'remote stack is not owned by this installation' >&2; exit 12; }; }
@@ -39,7 +41,10 @@ healthy() {
 }
 case "$action" in
     preflight)
+        command -v ss >/dev/null || { echo 'ss (iproute2) is required to check remote port conflicts' >&2; exit 13; }
         . /etc/os-release
+        [[ -d /run/systemd/system ]] || { echo 'systemd required' >&2; exit 13; }
+        case "$(uname -m)" in x86_64|aarch64) ;; *) echo 'unsupported remote architecture' >&2; exit 13;; esac
         case "$ID:$VERSION_ID" in debian:12|debian:13|ubuntu:22.04|ubuntu:24.04) ;; *) echo 'unsupported remote OS' >&2; exit 13;; esac
         if [[ ! -f $stack/.remnamanager-subscription ]]; then
             [[ ! -d $stack || -z $(find "$stack" -mindepth 1 -maxdepth 1 -print -quit) ]] || { echo 'existing remote stack is not managed' >&2; exit 12; }
@@ -74,9 +79,20 @@ case "$action" in
         if [[ $layout -ge 2 ]]; then
             decode "$RM_PROXY_COMPOSE_B64" > "$stack/$proxy/docker-compose.yml"
             if [[ $proxy == nginx ]]; then
+                if [[ $(decode "${RM_CERT_METHOD_B64:-YWNtZQ==}") == custom ]]; then
+                    if [[ -f $manager/acme/${domain}_ecc/$domain.conf ]]; then
+                        "$manager/acme/acme.sh" --remove --home "$manager/acme" --ecc -d "$domain"
+                    fi
+                    decode "$RM_CERTIFICATE_B64" > "$stack/nginx/fullchain.pem"
+                    decode "$RM_PRIVATE_KEY_B64" > "$stack/nginx/privkey.key"
+                    openssl x509 -in "$stack/nginx/fullchain.pem" -noout -checkend 0 -checkhost "$domain"
+                    cert_public=$(openssl x509 -in "$stack/nginx/fullchain.pem" -pubkey -noout)
+                    key_public=$(openssl pkey -in "$stack/nginx/privkey.key" -pubout)
+                    [[ $cert_public == "$key_public" ]] || { echo 'certificate key mismatch' >&2; exit 1; }
+                fi
                 if ! openssl x509 -in "$stack/nginx/fullchain.pem" -noout -checkend 0 -checkhost "$domain" >/dev/null 2>&1; then
                     decode "$RM_ACME_B64" > "$manager/acme-setup.sh"
-                    bash "$manager/acme-setup.sh" "$manager" "$stack" "$(decode "$RM_EMAIL_B64")" "$(decode "$RM_CA_B64")" "$domain"
+                    RM_CERT_METHOD=$(decode "${RM_CERT_METHOD_B64:-YWNtZQ==}") RM_DNS_TOKEN=$(decode "${RM_DNS_TOKEN_B64:-}") bash "$manager/acme-setup.sh" "$manager" "$stack" "$(decode "$RM_EMAIL_B64")" "$(decode "$RM_CA_B64")" "$domain"
                 fi
                 decode "$RM_CONFIG_B64" > "$stack/nginx/nginx.conf"
                 proxy_compose run --rm --no-deps "$proxyservice" nginx -t
@@ -125,12 +141,16 @@ COMPOSE
                 printf 'server { listen 80; server_name %s; location ^~ /.well-known/acme-challenge/ { root /var/www/remnamanager-acme; } location / { return 503; } }\n' "$domain" > "$stack/nginx/nginx.conf"
                 proxy_compose up -d
                 decode "$RM_ACME_B64" > "$manager/acme-setup.sh"
-                bash "$manager/acme-setup.sh" "$manager" "$stack" "$(decode "$RM_EMAIL_B64")" "$(decode "$RM_CA_B64")" "$domain"
+                RM_CERT_METHOD=$(decode "${RM_CERT_METHOD_B64:-YWNtZQ==}") RM_DNS_TOKEN=$(decode "${RM_DNS_TOKEN_B64:-}") bash "$manager/acme-setup.sh" "$manager" "$stack" "$(decode "$RM_EMAIL_B64")" "$(decode "$RM_CA_B64")" "$domain"
             fi
             decode "$RM_CONFIG_B64" > "$stack/nginx/nginx.conf"
             proxy_compose run --rm --no-deps nginx nginx -t
             proxy_compose up -d
             proxy_compose exec -T nginx nginx -s reload
+        fi
+        if [[ $proxy == nginx && $(decode "${RM_CERT_METHOD_B64:-YWNtZQ==}") != custom ]]; then
+            [[ -x $manager/acme/acme.sh ]] || { echo 'remote ACME renewal client is missing' >&2; exit 1; }
+            decode "$RM_RENEWAL_B64" | bash -s -- "$manager"
         fi
         ;;
     start)

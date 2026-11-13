@@ -33,6 +33,26 @@ func (m Model) openPanelOperation(selected item) (tea.Model, tea.Cmd) {
 	m.panelRequest = services.PanelRequest{Action: selected.action}
 	m.panelTitle = m.l(selected.ru, selected.en)
 	switch selected.action {
+	case "panel-domains":
+		p := services.PanelParameters{}
+		if live, ok := m.liveInstaller(); ok {
+			p = live.Defaults()
+		}
+		m.inputs = []textinput.Model{newInput("panel.example.com", p.PanelDomain+" "+p.SubscriptionDomain)}
+		m.focus = 0
+		m.screen = "panelInput"
+		return m, m.inputs[0].Focus()
+	case "panel-certificates":
+		m.prepareInstallInputs()
+		m.editingCertificates = true
+		if m.proxyChoice == 1 {
+			m.notice = m.l("Caddy автоматически продлевает сертификаты. Для проверки HTTPS используйте диагностику прокси.", "Caddy renews certificates automatically. Use proxy diagnostics to check HTTPS.")
+			m.screen = "notice"
+			return m, nil
+		}
+		m.screen = "certificateOptions"
+		return m, nil
+
 	case "sub-ssh-edit":
 		m.remoteInstallWizard = false
 		if live, ok := m.liveInstaller(); ok && live.Defaults().RemoteSubscription != nil {
@@ -108,6 +128,11 @@ func (m Model) receivePanelResult(msg panelResultMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.cancelInstall()
+	if m.panelRequest.Action == "sub-ssh-scan" && msg.err != nil && m.remoteInstallWizard {
+		m.screen = "panelRemoteInput"
+		m.problem = m.errorText(msg.err)
+		return m, nil
+	}
 	if m.panelRequest.Action == "sub-ssh-scan" && msg.err == nil {
 		m.remoteDraft = msg.result.Remote
 		m.remoteFingerprint = msg.result.Fingerprint
@@ -126,7 +151,7 @@ func (m Model) receivePanelResult(msg panelResultMsg) (tea.Model, tea.Cmd) {
 		} else if msg.result.Installation != "partial" {
 			items = items[1:]
 		}
-		m.frames = append(m.frames, frame{items: items, title: "Панель и компоненты", titleEN: "Panel and components"})
+		m.frames = append(m.frames, frame{items: items, title: "Управление панелью", titleEN: "Panel management"})
 		if msg.result.Remote.SSH.Host != "" {
 			last := len(m.frames) - 1
 			m.frames[last].items = append(m.frames[last].items, group("Сохранённая удалённая подписка", "Preserved remote subscription", operation("Статус", "Status", "sub-status"), operation("SSH-доступ", "SSH access", "sub-ssh-details"), operation("Удалить удалённую подписку", "Remove remote subscription", "sub-remove")))
@@ -212,6 +237,13 @@ func (m Model) updatePanelScreen(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			value := strings.TrimSpace(m.inputs[0].Value())
 			var err error
 			switch m.panelRequest.Action {
+			case "panel-domains":
+				names := strings.Fields(strings.ToLower(value))
+				if len(names) != 2 || !installer.ValidDomain(names[0]) || !installer.ValidDomain(names[1]) || names[0] == names[1] {
+					err = fmt.Errorf("enter two different domains separated by a space")
+				} else {
+					value = strings.Join(names, " ")
+				}
 			case "panel-proxy":
 				value = strings.ToLower(value)
 				if value != "nginx" && value != "caddy" {
@@ -314,6 +346,9 @@ func (m Model) panelScreenView() string {
 		if m.panelRequest.Action == "panel-protection" {
 			label = m.l("Домен TinyAuth (прямой поддомен панели, A/AAAA на сервер):", "TinyAuth domain (direct child of panel domain, DNS pointing here):")
 		}
+		if m.panelRequest.Action == "panel-domains" {
+			label = m.l("Домен панели и домен подписки через пробел:", "Panel domain and subscription domain separated by a space:")
+		}
 		text := title + "\n\n" + label + "\n" + m.inputs[0].View()
 		if m.panelRequest.Action == "panel-update" {
 			text += "\n\nhttps://github.com/remnawave/backend/releases"
@@ -330,6 +365,10 @@ func (m Model) panelScreenView() string {
 		}
 		description := m.l("Операция изменит компоненты управляемого стека.", "This operation changes components in the managed stack.")
 		switch m.panelRequest.Action {
+		case "panel-domains":
+			description = m.l("Будут проверены DNS и сертификаты, создана резервная копия и обновлены адреса панели и подписки. При ошибке будет выполнен откат. Размещение серверов сохраняется.", "DNS and certificates will be checked, a backup created and panel/subscription domains updated. A failure triggers rollback. Server placement is preserved.")
+		case "panel-certificates":
+			description = m.l("Сохранить выбранный способ SSL, проверить сертификаты и обновить HTTPS и продление?", "Save the selected SSL method, verify certificates and update HTTPS and renewal?")
 		case "panel-firewall-repair":
 			description = m.l("Обновить firewall панели, чтобы HTTP/HTTPS проходили в Docker?\nСохраняются разрешённые порты SSH. Правила будут действовать после перезагрузки.", "Update the panel firewall to allow published HTTP/HTTPS into Docker?\nThe SSH allowlist is preserved. Rules persist across reboots.")
 		case "panel-proxy":

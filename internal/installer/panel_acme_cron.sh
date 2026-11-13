@@ -2,6 +2,18 @@ set -Eeuo pipefail
 manager=$1
 acme="$manager/acme/acme.sh"
 systemctl enable --now cron
+if [[ -x $manager/renew-dns.sh ]]; then
+    # Replace only this installation's known ACME job and our own marker.
+    entries=$(crontab -l 2>/dev/null || true)
+    kept=""
+    while IFS= read -r line; do
+        normalized=${line//\"/}; normalized=${normalized//\'/}
+        if [[ $normalized == *" $acme --cron "* || $line == *"# RemnaManager DNS $manager" ]]; then continue; fi
+        kept+="$line"$'\n'
+    done <<< "$entries"
+    printf '%s30 3 * * * %q # RemnaManager DNS %s\n' "$kept" "$manager/renew-dns.sh" "$manager" | crontab -
+    exit 0
+fi
 renewal_installed() {
     local entries line
     entries=$(crontab -l 2>/dev/null) || return 1

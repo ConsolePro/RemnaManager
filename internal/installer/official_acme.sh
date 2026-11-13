@@ -5,6 +5,8 @@ stack=$2
 email=$3
 ca=$4
 domains=$5
+method=${RM_CERT_METHOD:-acme}
+case "$method" in acme|cloudflare|gcore|bunny) ;; *) exit 2;; esac
 case "$ca" in letsencrypt|zerossl) ;; *) exit 2;; esac
 mkdir -p "$manager" "$stack/nginx"
 acme="$manager/acme/acme.sh"
@@ -34,6 +36,30 @@ if ! register_account; then
     ca=letsencrypt
     "$acme" --set-default-ca --home "$manager/acme" --server letsencrypt
     register_account || { echo 'Lets Encrypt registration failed; no certificate requested.' >&2; exit 1; }
+fi
+
+# DNS credentials arrive on stdin as shell data prepared by Go. Encrypt at rest;
+# acme.sh DNS hooks must not save a second unencrypted copy in account.conf.
+if [[ $method != acme ]]; then
+    case "$method" in
+        cloudflare) dns_hook=dns_cf; token_name=CF_Token;;
+        gcore) dns_hook=dns_gcore; token_name=GCORE_Key;;
+        bunny) dns_hook=dns_bunny; token_name=BUNNY_API_KEY;;
+    esac
+    [[ -f $manager/acme/dnsapi/$dns_hook.sh ]] || { echo 'installed acme.sh does not support selected DNS API' >&2; exit 1; }
+    sed -i -E "/^[[:space:]]*(_saveaccountconf_mutable|_savedomainconf) $token_name /d" "$manager/acme/dnsapi/$dns_hook.sh"
+    [[ -s $manager/dns-token.key ]] || openssl rand -hex 32 > "$manager/dns-token.key"
+    printf '%s' "$RM_DNS_TOKEN" | openssl enc -aes-256-cbc -pbkdf2 -salt -pass "file:$manager/dns-token.key" -out "$manager/dns-token.enc"
+    export "$token_name=$RM_DNS_TOKEN"
+    unset RM_DNS_TOKEN
+    printf '#!/usr/bin/env bash\nset -Eeuo pipefail\numask 077\nmanager=%q\ntoken_name=%q\n' "$manager" "$token_name" > "$manager/renew-dns.sh"
+    cat >> "$manager/renew-dns.sh" <<'DNSRENEW'
+token=$(openssl enc -d -aes-256-cbc -pbkdf2 -pass "file:$manager/dns-token.key" -in "$manager/dns-token.enc")
+export "$token_name=$token"
+unset token
+exec "$manager/acme/acme.sh" --cron --home "$manager/acme" --config-home "$manager/acme"
+DNSRENEW
+    chmod 700 "$manager/renew-dns.sh"
 fi
 
 # TLS-ALPN-01 always arrives on public 443. Relay it to the requested local
@@ -89,6 +115,7 @@ if [[ $(docker inspect --format '{{.State.Running}}' remnawave-nginx 2>/dev/null
     docker exec remnawave-nginx nginx -t
     docker exec remnawave-nginx nginx -s reload
 elif [[ $(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' caddy 2>/dev/null || true) == "$stack/caddy" ]]; then
+    docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
     docker exec caddy caddy reload --force --config /etc/caddy/Caddyfile --adapter caddyfile
 fi
 RELOAD
@@ -101,7 +128,20 @@ trap '"$relay" finish' EXIT
 issue_status=0
 # --alpn already selects standalone TLS mode. Adding --standalone would assign
 # HTTP-01 to the first domain and ALPN to the next domain instead.
-"$acme" --issue --home "$manager/acme" --server "$ca" "${args[@]}" --alpn --tlsport 8443 --keylength ec-256 --pre-hook "'$relay' start" --post-hook "'$relay' finish" || issue_status=$?
+if [[ $method == acme ]]; then
+    "$acme" --issue --home "$manager/acme" --server "$ca" "${args[@]}" --alpn --tlsport 8443 --keylength ec-256 --pre-hook "'$relay' start" --post-hook "'$relay' finish" || issue_status=$?
+else
+    # Keep exact SAN names as well as wildcards: apex and deeper labels are
+    # never assumed to be covered by a wildcard of a different level.
+    declare -A wildcard_seen=()
+    for domain in "${names[@]}"; do
+        # Pair each exact name with a wildcard below that name. Never guess
+        # its registrable zone (e.g. example.co.uk must not become *.co.uk).
+        parent=$domain
+        if [[ -z ${wildcard_seen[$parent]:-} ]]; then args+=(-d "*.$parent"); wildcard_seen[$parent]=1; fi
+    done
+    "$acme" --issue --home "$manager/acme" --server "$ca" "${args[@]}" --dns "$dns_hook" --keylength ec-256 || issue_status=$?
+fi
 [[ $issue_status == 0 || $issue_status == 2 ]] || exit "$issue_status"
 "$relay" finish
 "$acme" --install-cert --home "$manager/acme" --ecc -d "${names[0]}" --key-file "$stack/nginx/privkey.key" --fullchain-file "$stack/nginx/fullchain.pem" --reloadcmd "$manager/reload-nginx.sh"

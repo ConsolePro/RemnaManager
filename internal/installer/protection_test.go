@@ -37,8 +37,14 @@ func TestInstallSummaryUsesProtectedAccessLink(t *testing.T) {
 		if mode == "cookie" && !strings.Contains(text, "?"+s.CookieKey+"="+s.CookieValue) {
 			t.Fatal("Cookie access token missing")
 		}
-		if strings.Contains(text, s.AdminPassword) {
-			t.Fatal("initial password exposed in summary")
+		if !strings.Contains(text, s.AdminPassword) {
+			t.Fatal("initial panel password missing from final instructions")
+		}
+		if mode == "tinyauth" && !strings.Contains(text, s.TinyPassword) {
+			t.Fatal("TinyAuth initial password missing")
+		}
+		if mode == "mfa" && !strings.Contains(text, s.MFAPassword) {
+			t.Fatal("MFA initial password missing")
 		}
 	}
 }

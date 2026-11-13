@@ -2,8 +2,13 @@
 
 `panel.compose.yml` и `panel.env` скачаны из официального backend 13.11.2026:
 
-- https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/docker-compose-prod.yml
-- https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/.env.sample
+- https://raw.githubusercontent.com/remnawave/backend/3.4.9/docker-compose-prod.yml
+- https://raw.githubusercontent.com/remnawave/backend/3.4.9/.env.sample
+
+Новая установка загружает эти артефакты в закрытый кеш менеджера и сверяет
+SHA-256 из `panel_artifacts.go`. При ошибке загрузки или несовпадении хеша
+установка останавливается. Встроенные копии используются для рендеринга
+и тестов; подмены недоступного файла сгенерированным вариантом нет.
 
 Compose Nginx, Caddy и подписки соответствуют примерам docs.rw. В Caddy
 изменены только volumes: постоянные данные сохраняются в локальных каталогах.

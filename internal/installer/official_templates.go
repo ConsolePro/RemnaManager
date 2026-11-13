@@ -126,7 +126,9 @@ func officialArgs(s State, args []string) []string {
 }
 
 func renderOfficialStack(s State) ([]byte, error) {
-	text := templateFile("panel.compose.yml")
+	return renderOfficialStackSource(s, []byte(templateFile("panel.compose.yml")))
+}
+func renderOfficialStackSource(s State, text []byte) ([]byte, error) {
 	var err error
 	data, err := patchComposeImage([]byte(text), "remnawave", "remnawave/backend:"+s.BackendTag)
 	if err != nil {
@@ -136,7 +138,9 @@ func renderOfficialStack(s State) ([]byte, error) {
 }
 
 func renderOfficialEnv(s State) []byte {
-	text := templateFile("panel.env")
+	return renderOfficialEnvSource(s, templateFile("panel.env"))
+}
+func renderOfficialEnvSource(s State, text string) []byte {
 	values := map[string]string{"APP_SECRET": s.AppSecret, "METRICS_PASS": s.MetricsPassword, "WEBHOOK_SECRET_HEADER": s.WebhookSecret, "POSTGRES_PASSWORD": s.DBPassword, "DATABASE_URL": "\"postgresql://postgres:" + s.DBPassword + "@remnawave-db:5432/postgres\"", "PANEL_DOMAIN": s.Params.PanelDomain, "FRONT_END_DOMAIN": s.Params.PanelDomain, "SUB_PUBLIC_DOMAIN": s.Params.SubscriptionDomain}
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
@@ -239,12 +243,10 @@ func (r *Real) configureOfficialProxy(ctx context.Context) error {
 		return err
 	}
 	if r.state.Params.Proxy == "nginx" && commonCertificateUsable(r.Stack, proxyDomains(r.state.Params)) != nil {
-		if _, err := r.Runner.Run(ctx, panelACMEScript, "bash", "-s", "--", r.Root, r.Stack, r.state.Params.Email, panelCA(r.state.Params), strings.Join(proxyDomains(r.state.Params), ",")); err != nil {
+		if err := r.installPanelCertificates(ctx); err != nil {
 			return err
 		}
-		if err := commonCertificateUsable(r.Stack, proxyDomains(r.state.Params)); err != nil {
-			return err
-		}
+
 	} else if r.state.Params.Proxy == "nginx" {
 		if err := r.ensureACMERenewal(ctx); err != nil {
 			return err

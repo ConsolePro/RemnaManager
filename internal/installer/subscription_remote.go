@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -116,14 +117,32 @@ func (r *Real) remoteSubscription(ctx context.Context, action, value string) (st
 			return "", err
 		}
 	}
-	values := map[string]string{"LAYOUT": strconv.Itoa(r.state.LayoutVersion), "PROXY_COMPOSE": templateFile(remote.Proxy + ".compose.yml"), "CA": panelCA(r.state.Params), "ACTION": action, "VALUE": value, "COMPOSE": string(compose), "ENV": string(env), "CONFIG": config, "DOMAIN": r.state.Params.SubscriptionDomain, "PANEL": r.state.Params.PanelDomain, "TOKEN": r.state.SubToken, "EMAIL": r.state.Params.Email, "PROXY": remote.Proxy, "SETUP": string(setupScript), "ACME": string(r.acmeScript())}
+	values := map[string]string{"LAYOUT": strconv.Itoa(r.state.LayoutVersion), "PROXY_COMPOSE": templateFile(remote.Proxy + ".compose.yml"), "CA": panelCA(r.state.Params), "ACTION": action, "VALUE": value, "COMPOSE": string(compose), "ENV": string(env), "CONFIG": config, "DOMAIN": r.state.Params.SubscriptionDomain, "PANEL": r.state.Params.PanelDomain, "TOKEN": r.state.SubToken, "EMAIL": r.state.Params.Email, "PROXY": remote.Proxy, "SETUP": string(setupScript), "ACME": string(r.acmeScript()), "CERT_METHOD": certificateMethod(r.state.Params), "DNS_TOKEN": r.state.Params.Certificate.Token, "RENEWAL": acmeRenewalScript}
+	if certificateMethod(r.state.Params) == "custom" && action == "install" {
+		cert, key := remoteCertificateFiles(r.state.Params.Certificate)
+		for name, path := range map[string]string{"CERTIFICATE": cert, "PRIVATE_KEY": key} {
+			data, e := os.ReadFile(path)
+			if e != nil {
+				return "", e
+			}
+			values[name] = string(data)
+		}
+	}
 	var input strings.Builder
 	input.WriteString("set +x\n")
 	for name, value := range values {
 		fmt.Fprintf(&input, "RM_%s_B64='%s'\n", name, base64.StdEncoding.EncodeToString([]byte(value)))
 	}
 	input.Write(subscriptionRemoteScript)
-	data, err := r.Runner.Run(ctx, []byte(input.String()), "ssh", args...)
+	var data []byte
+	if remote.Password != "" {
+		data, err = runSubscriptionPassword(ctx, *remote, []byte(input.String()))
+		if r.log != nil {
+			fmt.Fprintf(r.log, "Remote subscription %s: exit=%v\n%s\n", action, err, r.safeOutput(data))
+		}
+	} else {
+		data, err = r.Runner.Run(ctx, []byte(input.String()), "ssh", args...)
+	}
 	if r.state.Removed {
 		return r.safeOutput(data), err
 	}

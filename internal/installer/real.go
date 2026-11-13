@@ -97,6 +97,9 @@ func (r *Real) Check(ctx context.Context) (string, error) {
 		return "", e
 	}
 	r.state = s
+	if s.ConfigurationBackup != "" {
+		return "", errors.New("configuration recovery pending; retry Change domains or Certificates and renewal")
+	}
 	if s.RemovalPending {
 		return "", errors.New("finish interrupted removal using Panel and components → Remove panel")
 	}
@@ -155,6 +158,9 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 		if runtime.GOOS != "linux" || os.Geteuid() != 0 {
 			return errors.New("Linux root required")
 		}
+		if err := r.checkCertificateParameters(ctx, p); err != nil {
+			return err
+		}
 		if err := r.preflight(ctx, p); err != nil {
 			return err
 		}
@@ -193,11 +199,15 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 			s.NodeSSH = nodeSSH
 			s.ProxyRuntime = "docker"
 			s.LayoutVersion = officialLayout
-			s.BackendTag = "3.4.9"
+			s.BackendTag = panelTemplateVersion
+			s.TemplateVersion = panelTemplateVersion
 		} else {
 			comparison := s.Params
 			comparison.Email = p.Email
 			comparison.CertificateAuthority = p.CertificateAuthority
+			if comparison.Certificate.Method == "" && p.Certificate.Method == "acme" {
+				comparison.Certificate.Method = "acme"
+			}
 			comparison.SSHPorts = p.SSHPorts
 			if s.Params.Protection == "" {
 				comparison.Protection, comparison.AuthDomain = p.Protection, p.AuthDomain
@@ -253,6 +263,11 @@ func (r *Real) Step(ctx context.Context, stage int, p services.PanelParameters) 
 		}
 		_, err = r.Runner.Run(ctx, setupScript, "bash", "-s", "--", setupProxy, runtime.GOARCH)
 	case 2:
+		if r.state.TemplateVersion != "" {
+			if err = r.downloadPanelArtifacts(ctx); err != nil {
+				break
+			}
+		}
 		if r.state.LayoutVersion >= officialLayout && !r.state.Completed[2] {
 			if err = r.checkOfficialResources(ctx); err != nil {
 				break
@@ -338,7 +353,26 @@ func (r *Real) configure() error {
 	if e != nil {
 		return e
 	}
-	files := map[string][]byte{filepath.Base(r.stackComposePath()): data, ".env": renderEnv(r.state), ".remnamanager-go": []byte("managed\n")}
+	env := renderEnv(r.state)
+	if r.state.TemplateVersion != "" {
+		composeSource, err := os.ReadFile(filepath.Join(r.Root, "templates", r.state.TemplateVersion, "docker-compose-prod.yml"))
+		if err != nil {
+			return err
+		}
+		envSource, err := os.ReadFile(filepath.Join(r.Root, "templates", r.state.TemplateVersion, ".env.sample"))
+		if err != nil {
+			return err
+		}
+		if !artifactHashValid(composeSource, panelArtifactHashes["docker-compose-prod.yml"]) || !artifactHashValid(envSource, panelArtifactHashes[".env.sample"]) {
+			return errors.New("official source cache checksum mismatch")
+		}
+		data, err = renderOfficialStackSource(r.state, composeSource)
+		if err != nil {
+			return err
+		}
+		env = renderOfficialEnvSource(r.state, string(envSource))
+	}
+	files := map[string][]byte{filepath.Base(r.stackComposePath()): data, ".env": env, ".remnamanager-go": []byte("managed\n")}
 	if r.state.LayoutVersion >= officialLayout {
 		if old, err := os.ReadFile(r.stackComposePath()); err == nil {
 			patched, e := patchOfficialAuthentication(old, r.state)
@@ -403,7 +437,11 @@ func (r *Real) Summary() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := r.state
-	return fmt.Sprintf("Panel: %s\nSubscription: https://%s/<shortUuid>\nProtection: %s\nUse Panel access to reveal the initial credentials.\nLog: %s", panelAccessURL(s), s.Params.SubscriptionDomain, protectionMode(s.Params), r.LogPath)
+	status := "HTTPS: verification pending / проверка не завершена"
+	if s.Ready {
+		status = "HTTPS: verified / проверен"
+	}
+	return accessDetails(s, r.Root, true) + "\n" + accessDetails(s, r.Root, false) + "\n" + status + "\nLog: " + r.LogPath
 }
 func (r *Real) Close() error {
 	r.mu.Lock()

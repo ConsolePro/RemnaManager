@@ -28,7 +28,7 @@ func TestRemoteSubscriptionTrustPreservesInstallInputs(t *testing.T) {
 	}
 	press(&m, tea.KeyEnter)
 	p := m.parameters()
-	if m.screen != "confirm" || p.PanelDomain != "panel.example.test" || p.SubscriptionDomain != "sub.example.test" || p.RemoteSubscription == nil || p.RemoteSubscription.SSH.HostKey != "pinned-key" {
+	if m.screen != "installOptions" || p.PanelDomain != "panel.example.test" || p.SubscriptionDomain != "sub.example.test" || p.RemoteSubscription == nil || p.RemoteSubscription.SSH.HostKey != "pinned-key" {
 		t.Fatal("remote trust lost panel inputs", m.screen, p)
 	}
 	press(&m, tea.KeyEsc)

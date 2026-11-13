@@ -15,11 +15,25 @@ type PanelParameters struct {
 	CertificateAuthority            string
 	SSHPorts                        []int
 	RemoteSubscription              *SubscriptionRemote `json:",omitempty"`
+	Certificate                     CertificateParameters
+}
+
+// Credentials are persisted only inside the authenticated state envelope.
+type CertificateParameters struct {
+	Method                               string
+	Token                                string `json:"-"`
+	CertificateFile, KeyFile             string
+	RemoteCertificateFile, RemoteKeyFile string
+}
+
+type PanelPreflighter interface {
+	Preflight(context.Context, PanelParameters) (string, error)
 }
 
 type SubscriptionRemote struct {
 	SSH         NodeSSH
 	User, Proxy string
+	Password    string `json:"-"`
 }
 
 // LivePanelInstaller adds the host-changing installation lifecycle to the demo
@@ -39,6 +53,7 @@ type PanelInstaller interface {
 }
 
 type PanelRequest struct {
+	Certificate   CertificateParameters
 	Action, Value string
 	Protection    string
 	Remote        SubscriptionRemote
