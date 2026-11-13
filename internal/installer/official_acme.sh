@@ -99,7 +99,9 @@ args=()
 for domain in "${names[@]}"; do [[ $domain =~ ^[a-zA-Z0-9.-]+$ ]] || exit 2; args+=(-d "$domain"); done
 trap '"$relay" finish' EXIT
 issue_status=0
-"$acme" --issue --home "$manager/acme" --server "$ca" --standalone "${args[@]}" --alpn --tlsport 8443 --keylength ec-256 --pre-hook "'$relay' start" --post-hook "'$relay' finish" || issue_status=$?
+# --alpn already selects standalone TLS mode. Adding --standalone would assign
+# HTTP-01 to the first domain and ALPN to the next domain instead.
+"$acme" --issue --home "$manager/acme" --server "$ca" "${args[@]}" --alpn --tlsport 8443 --keylength ec-256 --pre-hook "'$relay' start" --post-hook "'$relay' finish" || issue_status=$?
 [[ $issue_status == 0 || $issue_status == 2 ]] || exit "$issue_status"
 "$relay" finish
 "$acme" --install-cert --home "$manager/acme" --ecc -d "${names[0]}" --key-file "$stack/nginx/privkey.key" --fullchain-file "$stack/nginx/fullchain.pem" --reloadcmd "$manager/reload-nginx.sh"

@@ -105,14 +105,30 @@ case "$1" in
   printf "ACCOUNT_URL='https://example.test/account/1'\n" > "$home/ca/$path/ca.conf"
   ;;
 esac
+if [[ $1 == --issue && -n ${TEST_ACME_SOURCE:-} ]]; then
+    exec bash "$TEST_ACME_PARSER" "$@"
+fi
 `
 			os.WriteFile(filepath.Join(manager, "acme", "acme.sh"), []byte(acme), 0700)
 			os.WriteFile(filepath.Join(bin, "systemctl"), []byte("#!/bin/sh\nexit 0\n"), 0700)
 			os.WriteFile(filepath.Join(bin, "crontab"), []byte("#!/bin/sh\nprintf '%s/acme/acme.sh --cron\\n' \"$TEST_MANAGER\"\n"), 0700)
+			// When supplied, exercise the real upstream command-line parser, while
+			// replacing only issuance so the test makes no network requests.
+			parser := filepath.Join(root, "parse.sh")
+			os.WriteFile(parser, []byte(`#!/bin/bash
+source <(sed '$d' "$TEST_ACME_SOURCE")
+issue() {
+    [[ $1 == alpn && $2 == panel.example.test && $3 == sub.example.test && $Le_TLSPort == 8443 ]] || {
+        printf 'Wrong challenge selection: root=%s domain=%s SAN=%s TLS-port=%s\n' "$1" "$2" "$3" "$Le_TLSPort" >&2
+        return 1
+    }
+}
+_process "$@"
+`), 0700)
 			script := filepath.Join(root, "issue.sh")
 			os.WriteFile(script, panelACMEScript, 0700)
 			command := exec.Command("bash", script, manager, stack, "admin@example.test", "zerossl", "panel.example.test,sub.example.test")
-			command.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "TEST_CALLS="+log, "TEST_MANAGER="+manager, "TEST_SCENARIO="+scenario)
+			command.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "TEST_CALLS="+log, "TEST_MANAGER="+manager, "TEST_SCENARIO="+scenario, "TEST_ACME_PARSER="+parser)
 			output, err := command.CombinedOutput()
 			calls, _ := os.ReadFile(log)
 			text := string(calls)
@@ -125,8 +141,19 @@ esac
 			if err != nil {
 				t.Fatal(err, string(output))
 			}
+			if scenario == "ok" && os.Getenv("TEST_ACME_SOURCE") != "" {
+				bad := exec.Command("bash", parser, "--issue", "--home", filepath.Join(manager, "acme"), "--standalone", "-d", "panel.example.test", "-d", "sub.example.test", "--alpn", "--tlsport", "8443")
+				bad.Env = command.Env
+				badOutput, badErr := bad.CombinedOutput()
+				if badErr == nil || !strings.Contains(string(badOutput), "root=no,alpn") {
+					t.Fatalf("upstream parser did not reproduce the original HTTP/ALPN conflict: %v %s", badErr, badOutput)
+				}
+			}
 			if strings.Count(text, "--issue ") != 1 || !strings.Contains(text, "-d panel.example.test -d sub.example.test --alpn --tlsport 8443") {
 				t.Fatal("not one SAN issuance", text)
+			}
+			if strings.Contains(text, "--standalone") || strings.Contains(text, "--webroot") {
+				t.Fatal("HTTP-01 conflicts with ALPN challenge selection", text)
 			}
 			if !strings.Contains(text, "--key-file "+stack+"/nginx/privkey.key --fullchain-file "+stack+"/nginx/fullchain.pem") {
 				t.Fatal("wrong certificate installation paths", text)
