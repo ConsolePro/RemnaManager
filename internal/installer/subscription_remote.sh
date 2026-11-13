@@ -13,6 +13,8 @@ if [[ $layout -ge 2 ]]; then
 fi
 stack=/opt/remnawave
 manager=/var/lib/remnamanager-subscription
+required_ports="80|443|3010"
+if [[ $layout -ge 2 && $proxy == nginx ]]; then required_ports="443|8443|3010"; fi
 [[ $(id -u) == 0 ]] || { echo 'root or passwordless sudo required' >&2; exit 10; }
 case "$proxy" in nginx|caddy) ;; *) exit 2;; esac
 mkdir -p "$manager"
@@ -41,7 +43,7 @@ case "$action" in
         case "$ID:$VERSION_ID" in debian:12|debian:13|ubuntu:22.04|ubuntu:24.04) ;; *) echo 'unsupported remote OS' >&2; exit 13;; esac
         if [[ ! -f $stack/.remnamanager-subscription ]]; then
             [[ ! -d $stack || -z $(find "$stack" -mindepth 1 -maxdepth 1 -print -quit) ]] || { echo 'existing remote stack is not managed' >&2; exit 12; }
-            if ss -H -ltn | awk '{print $4}' | grep -Eq ':(80|443|3010)$'; then echo 'remote port conflict' >&2; exit 14; fi
+            if ss -H -ltn | awk '{print $4}' | grep -Eq ":($required_ports)\$"; then echo 'remote port conflict' >&2; exit 14; fi
         fi
         getent ahosts "$domain" >/dev/null || { echo 'subscription DNS is not ready' >&2; exit 15; }
         if command -v docker >/dev/null; then docker info >/dev/null; docker compose version; else echo 'Docker will be installed after confirmation'; fi
@@ -52,7 +54,7 @@ case "$action" in
         [[ -d /run/systemd/system ]] || { echo 'systemd required' >&2; exit 13; }
         if [[ ! -f $stack/.remnamanager-subscription ]]; then
             [[ ! -d $stack || -z $(find "$stack" -mindepth 1 -maxdepth 1 -print -quit) ]] || { echo 'existing remote installation will not be overwritten' >&2; exit 12; }
-            if ss -H -ltn | awk '{print $4}' | grep -Eq ':(80|443|3010)$'; then echo 'remote port conflict' >&2; exit 14; fi
+            if ss -H -ltn | awk '{print $4}' | grep -Eq ":($required_ports)\$"; then echo 'remote port conflict' >&2; exit 14; fi
         else owned; fi
         getent ahosts "$domain" >/dev/null || { echo 'subscription DNS is not ready' >&2; exit 15; }
         decode "$RM_SETUP_B64" > "$manager/setup.sh"

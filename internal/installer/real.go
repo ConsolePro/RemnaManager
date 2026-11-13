@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -112,7 +111,7 @@ func (r *Real) Check(ctx context.Context) (string, error) {
 		return "", e
 	}
 	r.sshPorts = ports
-	return fmt.Sprintf("%s/%s · SSH TCP %v · HTTPS 80/443\nDocker/Compose, panel, database, subscription and firewall will be configured.", runtime.GOOS, runtime.GOARCH, ports), nil
+	return fmt.Sprintf("%s/%s · SSH TCP %v · HTTPS 443\nNginx: local ACME 8443; Caddy: HTTP 80.\nDocker/Compose, panel, database, subscription and firewall will be configured.", runtime.GOOS, runtime.GOARCH, ports), nil
 }
 func releaseValue(s, key string) string {
 	for _, line := range strings.Split(s, "\n") {
@@ -428,9 +427,14 @@ func (r *Real) Close() error {
 }
 
 func (r *Real) preflight(ctx context.Context, p services.PanelParameters) error {
+	layout := r.state.LayoutVersion
+	if r.state.Params.PanelDomain == "" {
+		layout = officialLayout
+	}
 	if p.RemoteSubscription != nil {
 		old := r.state
 		r.state.Params = p
+		r.state.LayoutVersion = layout
 		_, err := r.remoteSubscription(ctx, "preflight", "")
 		r.state = old
 		if err != nil {
@@ -468,31 +472,16 @@ func (r *Real) preflight(ctx context.Context, p services.PanelParameters) error 
 		}
 	}
 	services.ReportProgress(ctx, "Проверяю доступность портов панели и прокси", "Checking panel and proxy port availability")
-	data, e := r.Runner.Run(ctx, nil, "ss", "-H", "-ltnp")
-	if e != nil {
+	managed := r.state.Params.PanelDomain != ""
+	if e = r.checkPanelPorts(ctx, p, layout, managed); e != nil {
 		return e
 	}
-	managed := r.state.Params.PanelDomain != ""
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 4 {
-			continue
-		}
-		_, port, _ := net.SplitHostPort(fields[3])
-		n, _ := strconv.Atoi(port)
-		if n != 80 && n != 443 && n != 3000 && n != 3010 && (n != 3020 || protectionMode(p) != "tinyauth") && (n != 3030 || protectionMode(p) != "mfa") {
-			continue
-		}
-		if !managed {
-			return fmt.Errorf("port %d is already in use; no existing service will be stopped", n)
-		}
-	}
-	if !managed && p.Proxy == "caddy" {
+	if !managed && layout < officialLayout && p.Proxy == "caddy" {
 		if _, e = os.Stat(r.systemPath("/etc/caddy/Caddyfile")); e == nil {
 			return errors.New("existing Caddyfile is not managed; refusing overwrite")
 		}
 	}
-	if !managed && p.Proxy == "nginx" {
+	if !managed && layout < officialLayout && p.Proxy == "nginx" {
 		if _, e = os.Stat(r.systemPath("/etc/nginx")); e == nil {
 			retained, _ := os.ReadFile(filepath.Join(r.Root, "retained-proxy"))
 			if string(retained) != "nginx\n" {

@@ -75,7 +75,7 @@ func (m Model) body() string {
 			status = m.l("Проверка окружения…", "Checking environment…")
 		}
 		if m.liveInstall() {
-			return accent.Render(m.l("Установка панели и компонентов", "Panel and component installation")) + "\n\n" + status + "\n\n" + m.l("Требуются два домена с A/AAAA на этот сервер и доступные TCP 80/443.\nСуществующие установки не перезаписываются.", "Two domains must resolve to this server; TCP 80/443 must be reachable.\nExisting unmanaged installations are not overwritten.") + "\n\n" + m.l("Enter — продолжить", "Enter — continue")
+			return accent.Render(m.l("Установка панели и компонентов", "Panel and component installation")) + "\n\n" + status + "\n\n" + m.l("Требуются домены с A/AAAA на целевые серверы и публичный TCP 443.\nCaddy также использует 80; Nginx — локальный ACME 8443.\nСуществующие установки не перезаписываются.", "Domains must resolve to their target servers; public TCP 443 is required.\nCaddy also uses 80; Nginx uses local ACME 8443.\nExisting unmanaged installations are not overwritten.") + "\n\n" + m.l("Enter — продолжить", "Enter — continue")
 		}
 		return accent.Render(m.l("Установка панели · ДЕМО", "Panel installation · DEMO")) + "\n\n" + status + "\n\n" + warning.Render(m.l("Все этапы фиктивные. Сервисы и файлы не изменяются.", "All stages are simulated. Services and files are not changed.")) + "\n\n" + m.l("Enter — продолжить", "Enter — continue")
 	case "domains":
