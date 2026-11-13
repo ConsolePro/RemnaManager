@@ -2,14 +2,86 @@ package installer
 
 import (
 	"bytes"
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+func TestOfficialProxyResumeChecksRenewalWithoutReissuing(t *testing.T) {
+	r := NewReal()
+	r.Root = t.TempDir()
+	r.Stack = filepath.Join(t.TempDir(), "stack")
+	s, err := newState(testParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.LayoutVersion = officialLayout
+	r.state = s
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := &x509.Certificate{SerialNumber: big.NewInt(1), DNSNames: proxyDomains(s.Params), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, cert, cert, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, data := range map[string][]byte{
+		filepath.Join(r.Stack, "nginx", "fullchain.pem"): pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		filepath.Join(r.Stack, "nginx", "privkey.key"):   pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: private}),
+		filepath.Join(r.Root, "acme", "acme.sh"):         []byte("existing client"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cronErr := errors.New("cron unavailable")
+	for _, fail := range []bool{true, false} {
+		checks := 0
+		r.Runner = &fakeRunner{response: func(call string, input []byte) ([]byte, error) {
+			if strings.HasPrefix(call, "bash ") {
+				checks++
+				if string(input) != acmeRenewalScript {
+					t.Fatal("resumed installation tried to reissue certificates")
+				}
+				if fail {
+					return nil, cronErr
+				}
+			}
+			return nil, nil
+		}}
+		err := r.configureOfficialProxy(context.Background())
+		if fail && !errors.Is(err, cronErr) {
+			t.Fatal("renewal failure lost", err)
+		}
+		if !fail && err != nil {
+			t.Fatal("resume failed", err)
+		}
+		if checks != 1 {
+			t.Fatal("renewal not checked exactly once", checks)
+		}
+	}
+}
 
 func TestOfficialComposeTemplatesAndNames(t *testing.T) {
 	s, _ := newState(testParams())

@@ -14,10 +14,27 @@ import (
 )
 
 //go:embed official_acme.sh
-var panelACMEScript []byte
+var officialACMEIssueScript string
 
 //go:embed panel_acme.sh
-var legacyPanelACMEScript []byte
+var legacyACMEIssueScript string
+
+//go:embed panel_acme_cron.sh
+var acmeRenewalScript string
+
+var panelACMEScript = []byte(officialACMEIssueScript + "\n" + acmeRenewalScript)
+var legacyPanelACMEScript = []byte(legacyACMEIssueScript + "\n" + acmeRenewalScript)
+
+func (r *Real) ensureACMERenewal(ctx context.Context) error {
+	// Imported certificates may have a separate renewal provider.
+	if _, err := os.Stat(filepath.Join(r.Root, "acme", "acme.sh")); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	_, err := r.Runner.Run(ctx, []byte(acmeRenewalScript), "bash", "-s", "--", r.Root)
+	return err
+}
 
 func (r *Real) acmeScript() []byte {
 	if r.state.LayoutVersion >= officialLayout {
@@ -144,6 +161,8 @@ func (r *Real) configureDockerProxy(ctx context.Context) error {
 			if _, err := r.Runner.Run(ctx, legacyPanelACMEScript, "bash", "-s", "--", r.Root, r.Stack, r.state.Params.Email, panelCA(r.state.Params), strings.Join(proxyDomains(r.state.Params), ",")); err != nil {
 				return err
 			}
+		} else if err := r.ensureACMERenewal(ctx); err != nil {
+			return err
 		}
 	}
 	if err := r.writeDockerProxy(true); err != nil {

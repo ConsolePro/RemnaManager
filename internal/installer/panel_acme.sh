@@ -39,6 +39,3 @@ HOOK
     chmod 700 "$hook"
     "$acme" --install-cert --home "$manager/acme" --ecc -d "$domain" --key-file "$certdir/privkey.pem" --fullchain-file "$certdir/fullchain.pem" --reloadcmd "$hook"
 done
-systemctl enable --now cron
-# acme.sh's installer owns its renewal cron entry; do not append another job.
-crontab -l | grep -F -- "$manager/acme/acme.sh" >/dev/null || { echo 'acme.sh renewal cron was not installed' >&2; exit 1; }

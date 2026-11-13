@@ -105,6 +105,3 @@ issue_status=0
 [[ $issue_status == 0 || $issue_status == 2 ]] || exit "$issue_status"
 "$relay" finish
 "$acme" --install-cert --home "$manager/acme" --ecc -d "${names[0]}" --key-file "$stack/nginx/privkey.key" --fullchain-file "$stack/nginx/fullchain.pem" --reloadcmd "$manager/reload-nginx.sh"
-systemctl enable --now cron
-if ! crontab -l 2>/dev/null | grep -F -- "$manager/acme/acme.sh" >/dev/null; then "$acme" --install-cronjob --home "$manager/acme"; fi
-crontab -l | grep -F -- "$manager/acme/acme.sh" >/dev/null || { echo 'ACME renewal cron is missing' >&2; exit 1; }

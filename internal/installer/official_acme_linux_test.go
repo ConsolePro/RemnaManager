@@ -111,7 +111,7 @@ fi
 `
 			os.WriteFile(filepath.Join(manager, "acme", "acme.sh"), []byte(acme), 0700)
 			os.WriteFile(filepath.Join(bin, "systemctl"), []byte("#!/bin/sh\nexit 0\n"), 0700)
-			os.WriteFile(filepath.Join(bin, "crontab"), []byte("#!/bin/sh\nprintf '%s/acme/acme.sh --cron\\n' \"$TEST_MANAGER\"\n"), 0700)
+			os.WriteFile(filepath.Join(bin, "crontab"), []byte("#!/bin/sh\nprintf '15 2 * * * \"%s/acme\"/acme.sh --cron --home \"%s/acme\" > /dev/null\\n' \"$TEST_MANAGER\" \"$TEST_MANAGER\"\n"), 0700)
 			// When supplied, exercise the real upstream command-line parser, while
 			// replacing only issuance so the test makes no network requests.
 			parser := filepath.Join(root, "parse.sh")

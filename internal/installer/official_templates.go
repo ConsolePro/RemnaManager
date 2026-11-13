@@ -245,6 +245,10 @@ func (r *Real) configureOfficialProxy(ctx context.Context) error {
 		if err := commonCertificateUsable(r.Stack, proxyDomains(r.state.Params)); err != nil {
 			return err
 		}
+	} else if r.state.Params.Proxy == "nginx" {
+		if err := r.ensureACMERenewal(ctx); err != nil {
+			return err
+		}
 	}
 	if err := r.writeOfficialProxy(); err != nil {
 		return err
